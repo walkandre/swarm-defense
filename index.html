@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Swarm Defense</title>
+<style>
+  :root {
+    --bg: #14161c;
+    --panel: #1d212b;
+    --panel2: #262b38;
+    --text: #d8dee9;
+    --dim: #8a93a6;
+    --accent: #4fc3f7;
+    --gold: #ffd166;
+    --danger: #ef476f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+  }
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+  #hud {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 8px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid #000;
+    user-select: none;
+    flex-wrap: wrap;
+  }
+  .stat { font-size: 15px; font-weight: 600; white-space: nowrap; }
+  .stat span { color: var(--dim); font-weight: 400; margin-right: 4px; }
+  #gold-val { color: var(--gold); }
+  #lives-val { color: var(--danger); }
+  #wave-val { color: var(--accent); }
+  .spacer { flex: 1; }
+  button {
+    background: var(--panel2);
+    color: var(--text);
+    border: 1px solid #3a4254;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.1s, border-color 0.1s;
+  }
+  button:hover { background: #313a4d; border-color: var(--accent); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  #shop { display: flex; gap: 8px; }
+  .tower-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    min-width: 86px;
+    padding: 5px 10px;
+    line-height: 1.2;
+  }
+  .tower-btn small { color: var(--gold); font-size: 12px; }
+  .tower-btn .key { color: var(--dim); font-size: 10px; }
+  .tower-btn.selected { border-color: var(--accent); background: #2a3a4d; box-shadow: 0 0 8px rgba(79,195,247,0.35); }
+  .tower-btn.unaffordable small { color: var(--danger); }
+  #start-wave { border-color: var(--accent); font-weight: 600; }
+  #canvas-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+  }
+  canvas {
+    background: #181b22;
+    box-shadow: 0 0 40px rgba(0,0,0,0.6);
+    max-width: 100%;
+    max-height: 100%;
+  }
+  #tip {
+    padding: 4px 16px;
+    font-size: 12px;
+    color: var(--dim);
+    background: var(--panel);
+    border-top: 1px solid #000;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="hud">
+    <div class="stat"><span>Gold</span><b id="gold-val">0</b></div>
+    <div class="stat"><span>Lives</span><b id="lives-val">0</b></div>
+    <div class="stat"><span>Wave</span><b id="wave-val">0</b></div>
+    <div id="shop"></div>
+    <div class="spacer"></div>
+    <button id="start-wave">Start Wave</button>
+    <button id="new-map">New Map</button>
+  </div>
+  <div id="canvas-wrap"><canvas id="game" width="1280" height="720"></canvas></div>
+  <div id="tip">Click to place the selected tower &middot; Right-click a tower to sell (70%) &middot; Keys 1&ndash;4 select towers, Esc cancels &middot; Enemies march right &rarr; left</div>
+</div>
+<script src="js/util.js"></script>
+<script src="js/map.js"></script>
+<script src="js/enemies.js"></script>
+<script src="js/towers.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
