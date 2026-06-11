@@ -262,10 +262,20 @@ const GameMap = {
     }
 
     // Roads: paint the asphalt base, then overlay the auto-tiled road sprite.
+    // The base backs the (opaque) straight/junction tiles so 2-wide corridors
+    // read as solid pavement and don't show grass at sub-pixel tile seams. The
+    // four convex-corner tiles (masks 3/6/9/12) are skipped on purpose: each
+    // has a transparent rounded notch on its OUTER corner, and leaving the base
+    // off there lets the grass show through the curl instead of a grey wedge.
+    // Their road-facing edges are fully opaque, so no seam is exposed to the
+    // paved neighbour.
     ctx.fillStyle = Tileset.ROAD_BASE;
     for (let x = 0; x < this.cols; x++) {
       for (let y = 0; y < this.rows; y++) {
-        if (this.grid[x][y]) ctx.fillRect(x * cs, y * cs, cs, cs);
+        if (!this.grid[x][y]) continue;
+        const m = this._roadMask(x, y);
+        if (m === 3 || m === 6 || m === 9 || m === 12) continue; // convex corner
+        ctx.fillRect(x * cs, y * cs, cs, cs);
       }
     }
     for (let x = 0; x < this.cols; x++) {
