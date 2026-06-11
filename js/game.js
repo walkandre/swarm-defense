@@ -309,6 +309,8 @@ function drawOverlays(ctx) {
 function render() {
   const ctx = Game.ctx;
   ctx.setTransform(Game.dpr, 0, 0, Game.dpr, 0, 0);
+  // Crisp pixel-art scaling; resizing the canvas resets this each time.
+  ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, Game.width, Game.height);
   GameMap.draw(ctx);
   drawPlacementPreview(ctx);
@@ -329,9 +331,7 @@ function frame(time) {
   requestAnimationFrame(frame);
 }
 
-function init() {
-  Game.canvas = document.getElementById("game");
-  Game.ctx = Game.canvas.getContext("2d");
+function start() {
   buildShop();
   bindInput();
   newMap();
@@ -341,6 +341,13 @@ function init() {
     if (Game.wave === 0 && Game.towers.length === 0) newMap();
   });
   requestAnimationFrame(frame);
+}
+
+function init() {
+  Game.canvas = document.getElementById("game");
+  Game.ctx = Game.canvas.getContext("2d");
+  // Start once the tilemap is decoded so the first frame has its sprites.
+  Tileset.load(start);
 }
 
 init();

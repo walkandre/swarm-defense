@@ -45,6 +45,97 @@ const GameMap = {
       const startY = Math.round(2 + band * (lane + 0.5) + jitter);
       this.paths.push(this._buildLane(rng, startY));
     }
+
+    this._buildWater(rng);
+    this._buildDecoration(rng);
+  },
+
+  // Scatter lakes (elliptical blobs) and the occasional river across the open
+  // grass. Water never overwrites the path, and lakes keep clear of it so the
+  // shores stay tidy; a river may cross a road, leaving a natural-looking gap.
+  _buildWater(rng) {
+    this.water = [];
+    for (let x = 0; x < this.cols; x++) this.water.push(new Array(this.rows).fill(false));
+
+    // True if any path cell sits inside the lake's footprint plus a one-cell
+    // shore buffer, so a placed lake never touches the road.
+    const clearOfPath = (cx, cy, rx, ry) => {
+      const ax = rx + 1, ay = ry + 1;
+      for (let y = -ay; y <= ay; y++)
+        for (let x = -ax; x <= ax; x++)
+          if ((x * x) / (ax * ax) + (y * y) / (ay * ay) <= 1 && this.isPath(cx + x, cy + y))
+            return false;
+      return true;
+    };
+
+    let placed = 0;
+    const lakeCount = Math.max(1, Math.round((this.cols * this.rows) / 380));
+    for (let i = 0; i < lakeCount; i++) {
+      const rx = randInt(rng, 2, 4), ry = randInt(rng, 2, 3);
+      if (this.cols < 2 * rx + 4 || this.rows < 2 * ry + 4) continue;
+      for (let tries = 0; tries < 50; tries++) {
+        const cx = randInt(rng, rx + 1, this.cols - rx - 2);
+        const cy = randInt(rng, ry + 1, this.rows - ry - 2);
+        if (!clearOfPath(cx, cy, rx, ry)) continue;
+        for (let y = -ry; y <= ry; y++) {
+          for (let x = -rx; x <= rx; x++) {
+            const nx = cx + x, ny = cy + y;
+            if ((x * x) / (rx * rx) + (y * y) / (ry * ry) <= 1) this.water[nx][ny] = true;
+          }
+        }
+        placed++;
+        break;
+      }
+    }
+
+    // A river half the time — or always, if no lake found a home, so every map
+    // gets some water.
+    if (placed === 0 || rng() < 0.5) this._buildRiver(rng);
+  },
+
+  _buildRiver(rng) {
+    const width = randInt(rng, 1, 2);
+    if (rng() < 0.5) {
+      let y = randInt(rng, 3, this.rows - 4);
+      for (let x = 0; x < this.cols; x++) {
+        if (rng() < 0.3) y += rng() < 0.5 ? -1 : 1;
+        y = clamp(y, 2, this.rows - 3);
+        for (let w = 0; w < width; w++) {
+          const ny = y + w;
+          if (ny >= 0 && ny < this.rows && !this.grid[x][ny]) this.water[x][ny] = true;
+        }
+      }
+    } else {
+      let x = randInt(rng, 3, this.cols - 4);
+      for (let yy = 0; yy < this.rows; yy++) {
+        if (rng() < 0.3) x += rng() < 0.5 ? -1 : 1;
+        x = clamp(x, 2, this.cols - 3);
+        for (let w = 0; w < width; w++) {
+          const nx = x + w;
+          if (nx >= 0 && nx < this.cols && !this.grid[nx][yy]) this.water[nx][yy] = true;
+        }
+      }
+    }
+  },
+
+  // Pick a stable grass variant and optional tree overlay for every open grass
+  // cell so the ground has texture and scattered woodland that doesn't flicker
+  // each frame. Path and water cells carry no decoration.
+  _buildDecoration(rng) {
+    const V = Tileset.GRASS_VARIANTS;
+    this.deco = [];
+    for (let x = 0; x < this.cols; x++) {
+      const col = [];
+      for (let y = 0; y < this.rows; y++) {
+        if (this.grid[x][y] || this.water[x][y]) { col.push(null); continue; }
+        const r = rng();
+        let overlay = null;
+        if (r < 0.05) overlay = Tileset.FOREST;
+        else if (r < 0.15) overlay = Tileset.TREE;
+        col.push({ grass: V[(rng() * V.length) | 0], overlay });
+      }
+      this.deco.push(col);
+    }
   },
 
   // Walk a single lane from the right edge to the left, widen it to two
@@ -103,9 +194,14 @@ const GameMap = {
     return this.grid[cx][cy];
   },
 
+  isWater(cx, cy) {
+    if (cx < 0 || cy < 0 || cx >= this.cols || cy >= this.rows) return false;
+    return this.water[cx][cy];
+  },
+
   canBuild(cx, cy) {
     if (cx < 0 || cy < 0 || cx >= this.cols || cy >= this.rows) return false;
-    return !this.grid[cx][cy] && !this.towersAt[cx][cy];
+    return !this.grid[cx][cy] && !this.water[cx][cy] && !this.towersAt[cx][cy];
   },
 
   // Spawn just off the right edge, aligned with the given lane's entry.
@@ -114,55 +210,97 @@ const GameMap = {
     return { x: w0.x + this.CELL * 2, y: w0.y };
   },
 
+  // 4-bit mask (N=1 E=2 S=4 W=8) of which neighbours are also path; selects
+  // the road tile that connects to them. Off the left/right edges the road is
+  // treated as continuing (lanes enter at the right edge and exit at the left),
+  // so boundary cells flow off-screen instead of getting a curb cap. The
+  // top/bottom edges keep their curb since the corridor never reaches them.
+  _roadMask(x, y) {
+    const p = (nx, ny) => {
+      if (nx < 0 || nx >= this.cols) return true;
+      if (ny < 0 || ny >= this.rows) return false;
+      return this.grid[nx][ny];
+    };
+    let m = 0;
+    if (p(x, y - 1)) m |= 1;
+    if (p(x + 1, y)) m |= 2;
+    if (p(x, y + 1)) m |= 4;
+    if (p(x - 1, y)) m |= 8;
+    return m;
+  },
+
+  // Like _roadMask but for water: off-grid counts as grass so lakes get a
+  // shore at the map edge instead of bleeding open water off-screen.
+  _waterMask(x, y) {
+    let m = 0;
+    if (this.isWater(x, y - 1)) m |= 1;
+    if (this.isWater(x + 1, y)) m |= 2;
+    if (this.isWater(x, y + 1)) m |= 4;
+    if (this.isWater(x - 1, y)) m |= 8;
+    return m;
+  },
+
   draw(ctx) {
     const cs = this.CELL;
-    // Base fill so the remainder strip beyond the grid blends in.
-    ctx.fillStyle = "#1a1e25";
-    ctx.fillRect(0, 0, this.pixelW, this.pixelH);
-    // Buildable ground with a subtle checker.
-    for (let x = 0; x < this.cols; x++) {
-      for (let y = 0; y < this.rows; y++) {
-        if (this.grid[x][y]) continue;
-        ctx.fillStyle = (x + y) % 2 === 0 ? "#1c2027" : "#1a1e25";
-        ctx.fillRect(x * cs, y * cs, cs, cs);
+    // Ground: grass over the whole canvas, including the remainder strip and
+    // any partial row/column beyond the cell grid.
+    const cols = Math.ceil(this.pixelW / cs);
+    const rows = Math.ceil(this.pixelH / cs);
+    for (let x = 0; x < cols; x++) {
+      for (let y = 0; y < rows; y++) {
+        const d = (this.deco[x] && this.deco[x][y]) || null;
+        Tileset.draw(ctx, d ? d.grass : Tileset.GRASS, x * cs, y * cs, cs, cs);
       }
     }
-    // Path corridor.
+
+    // Water: lakes & rivers, auto-tiled with their own shores over the grass.
+    for (let x = 0; x < this.cols; x++) {
+      for (let y = 0; y < this.rows; y++) {
+        if (!this.water[x][y]) continue;
+        Tileset.draw(ctx, Tileset.WATER[this._waterMask(x, y)], x * cs, y * cs, cs, cs);
+      }
+    }
+
+    // Roads: paint the asphalt base, then overlay the auto-tiled road sprite.
+    ctx.fillStyle = Tileset.ROAD_BASE;
+    for (let x = 0; x < this.cols; x++) {
+      for (let y = 0; y < this.rows; y++) {
+        if (this.grid[x][y]) ctx.fillRect(x * cs, y * cs, cs, cs);
+      }
+    }
     for (let x = 0; x < this.cols; x++) {
       for (let y = 0; y < this.rows; y++) {
         if (!this.grid[x][y]) continue;
-        ctx.fillStyle = "#2e3445";
-        ctx.fillRect(x * cs, y * cs, cs, cs);
+        const m = this._roadMask(x, y);
+        if (m === 15) continue; // fully surrounded: leave smooth asphalt
+        Tileset.draw(ctx, Tileset.ROAD[m], x * cs, y * cs, cs, cs);
       }
     }
-    // Per-lane decoration: chevrons, entry corridor extension, and markers.
+
+    // Extend each lane's entry corridor across the remainder strip to the edge.
     for (const path of this.paths) {
-      const wps = path.waypoints;
-      ctx.strokeStyle = "rgba(138, 147, 166, 0.25)";
-      ctx.lineWidth = 2;
-      for (let i = 4; i < wps.length - 1; i += 6) {
-        const a = wps[i], b = wps[i + 1];
-        const ang = Math.atan2(b.y - a.y, b.x - a.x);
-        ctx.save();
-        ctx.translate(a.x, a.y);
-        ctx.rotate(ang);
-        ctx.beginPath();
-        ctx.moveTo(6, -7);
-        ctx.lineTo(-4, 0);
-        ctx.lineTo(6, 7);
-        ctx.stroke();
-        ctx.restore();
+      const first = path.waypoints[0];
+      const last = path.waypoints[path.waypoints.length - 1];
+      const stripX = this.cols * cs;
+      ctx.fillStyle = Tileset.ROAD_BASE;
+      ctx.fillRect(stripX, first.y - cs, this.pixelW - stripX, cs * 2);
+      for (let x = stripX; x < this.pixelW; x += cs) {
+        Tileset.draw(ctx, Tileset.ROAD[14], x, first.y - cs, cs, cs); // top lane (E S W)
+        Tileset.draw(ctx, Tileset.ROAD[11], x, first.y, cs, cs);      // bottom lane (N E W)
       }
-      const first = wps[0];
-      const last = wps[wps.length - 1];
-      // Extend the entry corridor across the remainder strip to the edge.
-      ctx.fillStyle = "#2e3445";
-      ctx.fillRect(this.cols * cs, first.y - cs, this.pixelW - this.cols * cs, cs * 2);
       // Entry (right) / exit (left) markers.
-      ctx.fillStyle = "rgba(239, 71, 111, 0.35)";
-      ctx.fillRect(this.pixelW - 6, first.y - cs, 6, cs * 2);
-      ctx.fillStyle = "rgba(79, 195, 247, 0.35)";
-      ctx.fillRect(0, last.y - cs, 6, cs * 2);
+      ctx.fillStyle = "rgba(239, 71, 111, 0.55)";
+      ctx.fillRect(this.pixelW - 5, first.y - cs, 5, cs * 2);
+      ctx.fillStyle = "rgba(79, 195, 247, 0.55)";
+      ctx.fillRect(0, last.y - cs, 5, cs * 2);
+    }
+
+    // Tree overlays last so canopies sit above the ground and road edges.
+    for (let x = 0; x < this.cols; x++) {
+      for (let y = 0; y < this.rows; y++) {
+        const d = this.deco[x][y];
+        if (d && d.overlay) Tileset.draw(ctx, d.overlay, x * cs, y * cs, cs, cs);
+      }
     }
   },
 };

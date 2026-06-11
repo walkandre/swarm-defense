@@ -118,24 +118,28 @@ class Enemy {
 
   draw(ctx) {
     const r = this.radius;
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = this.hitFlash > 0 ? "#ffffff" : this.def.color;
-    ctx.fill();
-    // Slow tint ring.
+    const sprite = Tileset.ENEMIES[this.type];
+    const size = r * 2.6;
+    // Slow tint ring (drawn under the sprite).
     if (this.slowTimer > 0) {
       ctx.beginPath();
-      ctx.arc(this.x, this.y, r + 2, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(120, 200, 255, 0.8)";
+      ctx.arc(this.x, this.y, r + 3, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(120, 200, 255, 0.85)";
       ctx.lineWidth = 2;
       ctx.stroke();
     }
-    // Facing dot (direction of travel).
-    const vl = Math.hypot(this.vx, this.vy) || 1;
-    ctx.beginPath();
-    ctx.arc(this.x + (this.vx / vl) * r * 0.5, this.y + (this.vy / vl) * r * 0.5, r * 0.3, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(0,0,0,0.4)";
-    ctx.fill();
+    Tileset.draw(ctx, sprite.tile, this.x - size / 2, this.y - size / 2, size, size, sprite.flip);
+    // Brief white flash when hit.
+    if (this.hitFlash > 0) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, this.hitFlash / 0.1) * 0.55;
+      ctx.globalCompositeOperation = "lighter";
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = "#ffffff";
+      ctx.fill();
+      ctx.restore();
+    }
     // Health bar (only when damaged).
     if (this.hp < this.maxHp) {
       const w = r * 2.2;

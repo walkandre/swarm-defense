@@ -96,42 +96,21 @@ class Tower {
 
   draw(ctx) {
     const cs = GameMap.CELL;
-    // Base plate.
-    ctx.fillStyle = "#2a2f3d";
-    ctx.fillRect(this.cx * cs + 3, this.cy * cs + 3, cs - 6, cs - 6);
-    ctx.strokeStyle = "#3a4254";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(this.cx * cs + 3.5, this.cy * cs + 3.5, cs - 7, cs - 7);
+    // Structure sprite, drawn slightly larger than the cell so it reads as a
+    // building sitting on the ground.
+    const size = cs + 4;
+    const off = (cs - size) / 2;
+    Tileset.draw(ctx, Tileset.TOWERS[this.type], this.cx * cs + off, this.cy * cs + off - 2, size, size);
 
-    if (this.def.projectile === "pulse") {
-      // Frost crystal + expanding pulse ring.
+    // Expanding pulse ring for the frost tower.
+    if (this.def.projectile === "pulse" && this.pulseAnim > 0) {
+      const t = 1 - this.pulseAnim / 0.4;
       ctx.beginPath();
-      ctx.arc(this.x, this.y, 10, 0, Math.PI * 2);
-      ctx.fillStyle = this.def.color;
-      ctx.fill();
-      if (this.pulseAnim > 0) {
-        const t = 1 - this.pulseAnim / 0.4;
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, this.def.range * t, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(144, 224, 239, ${0.5 * (1 - t)})`;
-        ctx.lineWidth = 3;
-        ctx.stroke();
-      }
-      return;
+      ctx.arc(this.x, this.y, this.def.range * t, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(144, 224, 239, ${0.5 * (1 - t)})`;
+      ctx.lineWidth = 3;
+      ctx.stroke();
     }
-
-    // Turret body + barrel.
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, 11, 0, Math.PI * 2);
-    ctx.fillStyle = this.def.color;
-    ctx.fill();
-    ctx.save();
-    ctx.translate(this.x, this.y);
-    ctx.rotate(this.angle);
-    ctx.fillStyle = "#1a1d26";
-    const barrelLen = this.type === "sniper" ? 18 : 14;
-    ctx.fillRect(0, -3, barrelLen, 6);
-    ctx.restore();
   }
 }
 
