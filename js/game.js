@@ -3,6 +3,9 @@
 const Game = {
   canvas: null,
   ctx: null,
+  width: 0,   // logical size (CSS pixels); canvas backing store is dpr-scaled
+  height: 0,
+  dpr: 1,
   enemies: [],
   towers: [],
   projectiles: [],
@@ -51,8 +54,20 @@ function startWave() {
 
 // ---------------------------------------------------------------- setup
 
+// Size the canvas to fill its container, scaled for sharp rendering on
+// high-DPI displays. All game logic uses the logical (CSS pixel) size.
+function fitCanvas() {
+  const wrap = document.getElementById("canvas-wrap");
+  Game.dpr = window.devicePixelRatio || 1;
+  Game.width = wrap.clientWidth;
+  Game.height = wrap.clientHeight;
+  Game.canvas.width = Math.round(Game.width * Game.dpr);
+  Game.canvas.height = Math.round(Game.height * Game.dpr);
+}
+
 function newMap() {
-  GameMap.generate(Game.canvas.width, Game.canvas.height, (Math.random() * 2 ** 31) | 0);
+  fitCanvas();
+  GameMap.generate(Game.width, Game.height, (Math.random() * 2 ** 31) | 0);
   Game.enemies = [];
   Game.towers = [];
   Game.projectiles = [];
@@ -104,8 +119,8 @@ function updateHud() {
 
 function canvasCell(ev) {
   const rect = Game.canvas.getBoundingClientRect();
-  const scaleX = Game.canvas.width / rect.width;
-  const scaleY = Game.canvas.height / rect.height;
+  const scaleX = Game.width / rect.width;
+  const scaleY = Game.height / rect.height;
   const x = (ev.clientX - rect.left) * scaleX;
   const y = (ev.clientY - rect.top) * scaleY;
   return { cx: Math.floor(x / GameMap.CELL), cy: Math.floor(y / GameMap.CELL) };
@@ -167,7 +182,8 @@ function update(dt) {
     Game.spawnTimer -= dt;
     while (Game.spawnTimer <= 0 && Game.spawnQueue.length > 0) {
       const next = Game.spawnQueue.shift();
-      Game.enemies.push(new Enemy(next.type, waveHpScale(Game.wave), Math.random));
+      const lane = next.path != null ? next.path : (Math.random() * GameMap.paths.length) | 0;
+      Game.enemies.push(new Enemy(next.type, waveHpScale(Game.wave), Math.random, lane));
       Game.spawnTimer += next.delay;
     }
   }
@@ -263,7 +279,7 @@ function drawEffects(ctx) {
 }
 
 function drawOverlays(ctx) {
-  const W = Game.canvas.width, H = Game.canvas.height;
+  const W = Game.width, H = Game.height;
   if (Game.over) {
     ctx.fillStyle = "rgba(10, 12, 16, 0.75)";
     ctx.fillRect(0, 0, W, H);
@@ -292,7 +308,8 @@ function drawOverlays(ctx) {
 
 function render() {
   const ctx = Game.ctx;
-  ctx.clearRect(0, 0, Game.canvas.width, Game.canvas.height);
+  ctx.setTransform(Game.dpr, 0, 0, Game.dpr, 0, 0);
+  ctx.clearRect(0, 0, Game.width, Game.height);
   GameMap.draw(ctx);
   drawPlacementPreview(ctx);
   for (const t of Game.towers) t.draw(ctx);
@@ -318,6 +335,11 @@ function init() {
   buildShop();
   bindInput();
   newMap();
+  // Refit on resize while nothing is at stake; mid-game the canvas just
+  // stretches via CSS so the layout (and your towers) stay intact.
+  window.addEventListener("resize", () => {
+    if (Game.wave === 0 && Game.towers.length === 0) newMap();
+  });
   requestAnimationFrame(frame);
 }
 

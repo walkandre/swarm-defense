@@ -8,7 +8,7 @@ const ENEMY_TYPES = {
 };
 
 class Enemy {
-  constructor(type, hpScale, rng) {
+  constructor(type, hpScale, rng, pathIndex = 0) {
     const def = ENEMY_TYPES[type];
     this.type = type;
     this.def = def;
@@ -18,7 +18,11 @@ class Enemy {
     this.mass = def.mass;
     this.baseSpeed = def.speed * (0.9 + rng() * 0.2);
 
-    const sp = GameMap.spawnPoint();
+    // Which lane (entry→exit) this enemy follows.
+    this.pathIndex = Math.min(pathIndex, GameMap.paths.length - 1);
+    this.path = GameMap.paths[this.pathIndex];
+
+    const sp = GameMap.spawnPoint(this.pathIndex);
     const cs = GameMap.CELL;
     this.x = sp.x + rng() * cs;
     this.y = sp.y + (rng() * 2 - 1) * (cs * 0.7);
@@ -55,14 +59,14 @@ class Enemy {
 
   // Path distance left to the exit; lower = closer to leaking.
   remainingDist() {
-    const wps = GameMap.waypoints;
+    const wps = this.path.waypoints;
     const i = Math.min(this.wpIndex, wps.length - 1);
     const wp = wps[i];
-    return GameMap.remaining[i] + Math.hypot(wp.x - this.x, wp.y - this.y);
+    return this.path.remaining[i] + Math.hypot(wp.x - this.x, wp.y - this.y);
   }
 
   update(dt) {
-    const wps = GameMap.waypoints;
+    const wps = this.path.waypoints;
 
     if (this.wpIndex >= wps.length) {
       // Past the last waypoint: run straight off the left edge.
