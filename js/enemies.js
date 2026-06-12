@@ -173,12 +173,19 @@ class Enemy {
       sh = size * (1 - osc * 0.55 * wf);
     }
     const x = this.x + ox, y = this.y + oy;
+    // Freezing strength while slowed (fades out over the last 0.8s of the slow).
+    const frz = this.slowTimer > 0 ? Math.min(1, this.slowTimer / 0.8) : 0;
 
-    // Slow tint ring (drawn under the sprite).
-    if (this.slowTimer > 0) {
-      rd.ring(x, y, r + 3, "rgb(120, 200, 255)", 2, 0.85);
-    }
     rd.sprite(sprite.tile, x - sw / 2, y - sh / 2, sw, sh, sprite.flip);
+    // Freeze: icy body tint + frost rim + a couple of glinting crystals.
+    if (frz > 0) {
+      rd.disc(x, y, r * 1.15, "#a9dcff", 0.42 * frz);
+      rd.ring(x, y, r + 2, "#dff4ff", 1.5, 0.5 * frz, true);
+      for (let k = 0; k < 2; k++) {
+        const a = this.animClock * 5 + k * 3.14159;
+        rd.disc(x + Math.cos(a) * r, y + Math.sin(a) * r, 1, "#ffffff", 0.7 * frz, true);
+      }
+    }
     // Warp aura while displaced.
     if (this.warpT > 0) {
       rd.glow(x, y, r + 6, "#c08bff", 0.5 * (this.warpT / WARP_DUR));

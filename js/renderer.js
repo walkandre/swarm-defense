@@ -22,6 +22,29 @@
 // "lighter" compositing in 2D and ONE,ONE blending in WebGL.
 // ----------------------------------------------------------------------------
 
+// Live-tunable frost/displacement parameters (exposed to the debug GUI). Read
+// every frame by the post-process and the frost buildup logic, so edits apply
+// immediately.
+const FrostParams = {
+  displaceAmp: 2.5,      // px of scene warp at full field intensity
+  displaceFreq: 0.5,     // spatial frequency multiplier of the warp
+  tint: 0.27,            // icy colour tint strength
+  sparkle: 0.89,         // ice-crystal twinkle strength
+  protectStrength: 0.62, // how much tower footprints resist the warp (0..1)
+  protectRadius: 59,     // px radius around a tower kept crisp
+  restLevel: 0.18,       // idle frost intensity (the resting cold aura)
+  rampUp: 1.1,           // how fast the field builds while freezing
+  rampDown: 0.5,         // how fast it relaxes when idle
+};
+
+// Chromatic aberration radiating from each sniper bullet (RGB channel split in
+// the post-process). Also live-tunable via the debug GUI.
+const ChromaParams = {
+  strength: 6,   // max channel separation in px next to a bullet
+  radius: 46,    // px falloff radius of the aberration around a bullet
+  blur: 3,       // px blur radius around a bullet (spreads it into neighbours)
+};
+
 // --- shared color parsing (WebGL needs floats; cached so it's cheap per-frame).
 const _colorCache = new Map();
 function parseColor(css) {
@@ -66,6 +89,12 @@ class Canvas2DRenderer {
   }
 
   endFrame() {}
+
+  // Canvas-2D can't sample the framebuffer, so these screen-space post effects
+  // are WebGL-only flourishes; no-ops here (the frost ground/aura/tint and the
+  // bullet trails still render through the shared primitives).
+  setFrostFields() {}
+  setChromaPoints() {}
 
   sprite(tile, dx, dy, dw, dh, flip) {
     Tileset.draw(this.ctx, tile, dx, dy, dw, dh, flip);
@@ -164,7 +193,134 @@ class WebGLRenderer {
     this.verts = [];          // float stream for the current batch
     this.cur = null;          // { kind, blend } of the current batch
 
+    // Frost post-process: scene is rendered to an offscreen target, then a
+    // fullscreen pass warps it (displacement) + tints it inside frost fields.
+    this.postProg = this._program(WebGLRenderer.POST_VS, WebGLRenderer.POST_FS, { a_pos: 0 });
+    this.uPostScene = gl.getUniformLocation(this.postProg, "u_scene");
+    this.uPostRes = gl.getUniformLocation(this.postProg, "u_res");
+    this.uPostTime = gl.getUniformLocation(this.postProg, "u_time");
+    this.uPostCount = gl.getUniformLocation(this.postProg, "u_count");
+    this.uPostFields = gl.getUniformLocation(this.postProg, "u_fields[0]");
+    this.uPostTowers = gl.getUniformLocation(this.postProg, "u_towers[0]");
+    this.uPostTowerCount = gl.getUniformLocation(this.postProg, "u_towerCount");
+    this.uPostAmp = gl.getUniformLocation(this.postProg, "u_amp");
+    this.uPostFreq = gl.getUniformLocation(this.postProg, "u_freq");
+    this.uPostTint = gl.getUniformLocation(this.postProg, "u_tint");
+    this.uPostSparkle = gl.getUniformLocation(this.postProg, "u_sparkle");
+    this.uPostProtectStr = gl.getUniformLocation(this.postProg, "u_protectStr");
+    this.uPostProtectRad = gl.getUniformLocation(this.postProg, "u_protectRad");
+    this.uPostChroma = gl.getUniformLocation(this.postProg, "u_chroma[0]");
+    this.uPostChromaCount = gl.getUniformLocation(this.postProg, "u_chromaCount");
+    this.uPostChromaStr = gl.getUniformLocation(this.postProg, "u_chromaStr");
+    this.uPostChromaRad = gl.getUniformLocation(this.postProg, "u_chromaRad");
+    this.uPostChromaBlur = gl.getUniformLocation(this.postProg, "u_chromaBlur");
+    this.quadBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]), gl.STATIC_DRAW);
+    this.fbo = null;
+    this.sceneTex = null;
+    this.fboW = 0; this.fboH = 0;
+    this.frostFields = [];
+    this.frostTowers = [];   // tower positions to keep crisp inside the field
+    this.chromaPoints = [];  // sniper bullet positions for chromatic aberration
+    this._fieldBuf = new Float32Array(WebGLRenderer.MAX_FROST * 4);
+    this._towerBuf = new Float32Array(WebGLRenderer.MAX_PROTECT * 2);
+    this._chromaBuf = new Float32Array(WebGLRenderer.MAX_CHROMA * 2);
+    this.t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
+
     gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+  }
+
+  // The game hands us the active frost fields each frame (logical x,y,radius +
+  // 0..1 intensity) plus the tower positions to shield from the warp. The
+  // fields' presence switches the displacement pass on.
+  setFrostFields(fields, towers) {
+    this.frostFields = fields || [];
+    this.frostTowers = towers || [];
+  }
+
+  // Sniper bullet positions that radiate chromatic aberration.
+  setChromaPoints(points) { this.chromaPoints = points || []; }
+
+  // (Re)create the offscreen scene target when the backing size changes.
+  _ensureTargets(bw, bh) {
+    const gl = this.gl;
+    if (this.fbo && this.fboW === bw && this.fboH === bh) return;
+    if (this.sceneTex) gl.deleteTexture(this.sceneTex);
+    if (this.fbo) gl.deleteFramebuffer(this.fbo);
+    this.sceneTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.sceneTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, bw, bh, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.sceneTex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.fboW = bw; this.fboH = bh;
+  }
+
+  _postPass() {
+    const gl = this.gl;
+    gl.useProgram(this.postProg);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    for (let i = 1; i < 4; i++) gl.disableVertexAttribArray(i);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.sceneTex);
+    gl.uniform1i(this.uPostScene, 0);
+    gl.uniform2f(this.uPostRes, Game.width, Game.height);
+    gl.uniform1f(this.uPostTime, (performance.now() - this.t0) / 1000);
+    const n = Math.min(WebGLRenderer.MAX_FROST, this.frostFields.length);
+    gl.uniform1i(this.uPostCount, n);
+    const arr = this._fieldBuf;
+    arr.fill(0);
+    for (let i = 0; i < n; i++) {
+      const f = this.frostFields[i];
+      arr[i * 4] = f.x; arr[i * 4 + 1] = f.y; arr[i * 4 + 2] = f.r; arr[i * 4 + 3] = f.intensity;
+    }
+    gl.uniform4fv(this.uPostFields, arr);
+
+    // Tower footprints to shield from the warp.
+    const tn = Math.min(WebGLRenderer.MAX_PROTECT, this.frostTowers.length);
+    gl.uniform1i(this.uPostTowerCount, tn);
+    const tarr = this._towerBuf;
+    tarr.fill(0);
+    for (let i = 0; i < tn; i++) {
+      tarr[i * 2] = this.frostTowers[i].x;
+      tarr[i * 2 + 1] = this.frostTowers[i].y;
+    }
+    gl.uniform2fv(this.uPostTowers, tarr);
+
+    // Chromatic-aberration sources (sniper bullets).
+    const cn = Math.min(WebGLRenderer.MAX_CHROMA, this.chromaPoints.length);
+    gl.uniform1i(this.uPostChromaCount, cn);
+    const carr = this._chromaBuf;
+    carr.fill(0);
+    for (let i = 0; i < cn; i++) {
+      carr[i * 2] = this.chromaPoints[i].x;
+      carr[i * 2 + 1] = this.chromaPoints[i].y;
+    }
+    gl.uniform2fv(this.uPostChroma, carr);
+    gl.uniform1f(this.uPostChromaStr, ChromaParams.strength);
+    gl.uniform1f(this.uPostChromaRad, ChromaParams.radius);
+    gl.uniform1f(this.uPostChromaBlur, ChromaParams.blur);
+
+    // Live-tunable parameters.
+    gl.uniform1f(this.uPostAmp, FrostParams.displaceAmp);
+    gl.uniform1f(this.uPostFreq, FrostParams.displaceFreq);
+    gl.uniform1f(this.uPostTint, FrostParams.tint);
+    gl.uniform1f(this.uPostSparkle, FrostParams.sparkle);
+    gl.uniform1f(this.uPostProtectStr, FrostParams.protectStrength);
+    gl.uniform1f(this.uPostProtectRad, FrostParams.protectRadius);
+
+    gl.disable(gl.BLEND);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
     gl.enable(gl.BLEND);
   }
 
@@ -216,6 +372,11 @@ class WebGLRenderer {
     const gl = this.gl;
     const bw = Math.round(Game.width * Game.dpr);
     const bh = Math.round(Game.height * Game.dpr);
+    this.bw = bw; this.bh = bh;
+    // Only pay for the offscreen target + post pass when an effect needs it.
+    this.usePost = this.frostFields.length > 0 || this.chromaPoints.length > 0;
+    if (this.usePost) this._ensureTargets(bw, bh);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.usePost ? this.fbo : null);
     gl.viewport(0, 0, bw, bh);
     gl.clearColor(0.094, 0.106, 0.133, 1); // #181b22, matching the CSS backdrop
     gl.clear(gl.COLOR_BUFFER_BIT);
@@ -223,7 +384,15 @@ class WebGLRenderer {
     this.cur = null;
   }
 
-  endFrame() { this._flush(); }
+  endFrame() {
+    this._flush();
+    if (this.usePost) {
+      const gl = this.gl;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, this.bw, this.bh);
+      this._postPass();
+    }
+  }
 
   // Switch the active batch, flushing the previous one if the kind/blend differ.
   _batch(kind, blend) {
@@ -418,4 +587,126 @@ void main() {
   }
   float a = v_color.a * cov;
   gl_FragColor = vec4(v_color.rgb * a, a);
+}`;
+
+// --- frost displacement post-process ---------------------------------------
+// Samples the rendered scene texture and, inside each frost field, warps the
+// lookup by an animated procedural noise (the "displacement map"), tints the
+// result icy, and adds a sparse sparkle. Outside fields it's an identity blit.
+
+WebGLRenderer.MAX_FROST = 8;
+WebGLRenderer.MAX_PROTECT = 16;
+WebGLRenderer.MAX_CHROMA = 8;
+
+WebGLRenderer.POST_VS = `
+attribute vec2 a_pos;
+varying vec2 v_uv;
+void main() {
+  v_uv = a_pos * 0.5 + 0.5;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}`;
+
+WebGLRenderer.POST_FS = `
+precision highp float;
+uniform sampler2D u_scene;
+uniform vec2 u_res;                 // logical resolution
+uniform float u_time;
+uniform int u_count;
+uniform vec4 u_fields[8];           // x,y (logical), radius, intensity
+uniform int u_towerCount;
+uniform vec2 u_towers[16];          // tower footprints to keep crisp
+uniform float u_amp;
+uniform float u_freq;
+uniform float u_tint;
+uniform float u_sparkle;
+uniform float u_protectStr;
+uniform float u_protectRad;
+uniform int u_chromaCount;
+uniform vec2 u_chroma[8];           // sniper bullet positions (logical)
+uniform float u_chromaStr;
+uniform float u_chromaRad;
+uniform float u_chromaBlur;
+varying vec2 v_uv;
+
+void main() {
+  // Reconstruct this fragment's logical-pixel position (v_uv.y is flipped
+  // relative to logical Y because the scene texture's row 0 is the bottom).
+  vec2 frag = vec2(v_uv.x * u_res.x, (1.0 - v_uv.y) * u_res.y);
+
+  float frost = 0.0;
+  for (int i = 0; i < 8; i++) {
+    if (i >= u_count) break;
+    vec4 f = u_fields[i];
+    float d = distance(frag, f.xy);
+    frost += (1.0 - smoothstep(f.z * 0.2, f.z, d)) * f.w;
+  }
+  frost = clamp(frost, 0.0, 1.0);
+
+  // Tower footprints resist the warp: a structure shouldn't ripple like liquid.
+  float protect = 0.0;
+  for (int i = 0; i < 16; i++) {
+    if (i >= u_towerCount) break;
+    float d = distance(frag, u_towers[i]);
+    protect = max(protect, 1.0 - smoothstep(u_protectRad * 0.5, u_protectRad, d));
+  }
+
+  vec2 uv = v_uv;
+  if (frost > 0.001) {
+    // Animated displacement field (layered waves = a cheap displacement map).
+    float fq = u_freq;
+    vec2 disp = vec2(
+      sin(frag.x * 0.05 * fq + u_time * 1.3) + sin(frag.y * 0.08 * fq - u_time * 1.1),
+      sin(frag.x * 0.07 * fq - u_time * 0.9) + sin(frag.y * 0.045 * fq + u_time * 1.5));
+    disp += 0.5 * vec2(sin(frag.y * 0.20 * fq + u_time * 4.0), cos(frag.x * 0.22 * fq - u_time * 3.0));
+    float amp = u_amp * frost * (1.0 - protect * u_protectStr);
+    uv += (disp * amp) / u_res * vec2(1.0, -1.0);
+  }
+
+  // Chromatic aberration radiating from each bullet: split the R/B channels
+  // along the radial direction, strongest at the bullet and fading to nothing.
+  // The same proximity drives a localised blur that spreads the bullet out.
+  vec2 ca = vec2(0.0);
+  float bf = 0.0;
+  for (int i = 0; i < 8; i++) {
+    if (i >= u_chromaCount) break;
+    vec2 d = frag - u_chroma[i];
+    float dist = length(d);
+    float fall = 1.0 - smoothstep(0.0, u_chromaRad, dist);
+    bf = max(bf, fall);
+    if (dist > 0.001) ca += (d / dist) * fall;
+  }
+  ca = clamp(ca, -1.0, 1.0) * u_chromaStr;
+  vec2 caUV = ca / u_res * vec2(1.0, -1.0);
+
+  vec3 col;
+  float blurPx = bf * u_chromaBlur;
+  if (blurPx > 0.25) {
+    // 8-tap ring blur (+ centre) with the channel split applied to each tap.
+    vec3 acc = vec3(0.0);
+    for (int t = 0; t < 8; t++) {
+      float ang = float(t) * 0.7853982; // 45 deg steps
+      vec2 off = vec2(cos(ang), sin(ang)) * blurPx / u_res * vec2(1.0, -1.0);
+      acc.r += texture2D(u_scene, uv + off + caUV).r;
+      acc.g += texture2D(u_scene, uv + off).g;
+      acc.b += texture2D(u_scene, uv + off - caUV).b;
+    }
+    acc.r += texture2D(u_scene, uv + caUV).r;
+    acc.g += texture2D(u_scene, uv).g;
+    acc.b += texture2D(u_scene, uv - caUV).b;
+    col = acc / 9.0;
+  } else {
+    col.r = texture2D(u_scene, uv + caUV).r;
+    col.g = texture2D(u_scene, uv).g;
+    col.b = texture2D(u_scene, uv - caUV).b;
+  }
+
+  if (frost > 0.001) {
+    // Icy tint + faint frosting, plus a sparse twinkle of ice crystals.
+    vec3 ice = vec3(0.78, 0.90, 1.0);
+    col = mix(col, col * ice + vec3(0.06) * frost, frost * u_tint);
+    float spk = sin(frag.x * 0.7 + u_time * 5.0) * sin(frag.y * 0.6 - u_time * 4.0);
+    col += smoothstep(0.96, 1.0, spk) * frost * u_sparkle;
+  }
+
+  gl_FragColor = vec4(col, 1.0);
 }`;

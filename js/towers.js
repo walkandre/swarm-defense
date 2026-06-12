@@ -65,6 +65,8 @@ class Tower {
     this.angle = Math.PI; // face left toward incoming enemies
     this.pulseAnim = 0;
     this.recoil = 0; // 1 right after firing, decays to 0 (visual kickback)
+    this.freeze = 0; // frost field strength 0..1 (builds while in action)
+    this.clock = 0;  // local time accumulator for aura animation
   }
 
   // Target the enemy closest to the exit (the biggest threat).
@@ -82,14 +84,16 @@ class Tower {
 
   update(dt, enemies, projectiles, effects) {
     this.cooldown -= dt;
+    this.clock += dt;
     if (this.pulseAnim > 0) this.pulseAnim -= dt;
     if (this.recoil > 0) this.recoil = Math.max(0, this.recoil - dt / 0.22);
 
     if (this.def.projectile === "pulse") {
+      const r2 = this.def.range * this.def.range;
+      let inRange = false;
       if (this.cooldown <= 0) {
         // Slow + chip everything in range; only fire if someone is there.
         let hit = false;
-        const r2 = this.def.range * this.def.range;
         for (const e of enemies) {
           if (e.dead || dist2(this.x, this.y, e.x, e.y) > r2) continue;
           e.applySlow(this.def.slowFactor, this.def.slowDuration);
@@ -100,7 +104,17 @@ class Tower {
           this.cooldown = 1 / this.def.fireRate;
           this.pulseAnim = 0.4;
         }
+        inRange = hit;
+      } else {
+        for (const e of enemies) {
+          if (!e.dead && dist2(this.x, this.y, e.x, e.y) <= r2) { inRange = true; break; }
+        }
       }
+      // The field intensifies while it's actively freezing enemies and relaxes
+      // to a faint resting cold aura otherwise.
+      const target = inRange ? 1 : FrostParams.restLevel;
+      const rate = inRange ? FrostParams.rampUp : FrostParams.rampDown;
+      this.freeze += (target - this.freeze) * Math.min(1, dt * rate);
       return;
     }
 
@@ -175,10 +189,22 @@ class Tower {
         12 * this.recoil, "#ffd9a0", this.recoil * 0.8);
     }
 
-    // Expanding pulse ring for the frost tower.
-    if (this.def.projectile === "pulse" && this.pulseAnim > 0) {
-      const t = 1 - this.pulseAnim / 0.4;
-      r.ring(this.x, this.y, this.def.range * t, "#90e0ef", 3, 0.5 * (1 - t));
+    // Frost tower: a cold halo with slow drifting mist that thickens with the
+    // field strength, plus the expanding pulse ring on each tick.
+    if (this.def.projectile === "pulse") {
+      const f = this.freeze;
+      if (f > 0.02) {
+        r.glow(this.x, this.y, 24, "#cdefff", 0.22 * f);
+        for (let k = 0; k < 3; k++) {
+          const a = this.clock * 0.6 + k * 2.094;
+          r.disc(this.x + Math.cos(a) * 13, this.y + Math.sin(a) * 9 - 3,
+            5.5, "#e6f7ff", 0.1 * f, true);
+        }
+      }
+      if (this.pulseAnim > 0) {
+        const t = 1 - this.pulseAnim / 0.4;
+        r.ring(this.x, this.y, this.def.range * t, "#90e0ef", 3, 0.5 * (1 - t));
+      }
     }
   }
 }

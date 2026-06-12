@@ -244,6 +244,37 @@ function update(dt) {
 
 // ---------------------------------------------------------------- render
 
+// Snow/ice sheet accreting on the ground under each active frost tower, with
+// ice crystals that accumulate as the field strengthens. Drawn before units so
+// it sits on the ground.
+function drawFrostGround(r) {
+  for (const t of Game.towers) {
+    if (t.def.projectile !== "pulse" || t.freeze <= 0.02) continue;
+    const f = t.freeze, range = t.def.range;
+    r.disc(t.x, t.y, range, "#eaf6ff", 0.1 * f);
+    r.disc(t.x, t.y, range * 0.6, "#dff0ff", 0.1 * f);
+    r.ring(t.x, t.y, range, "#bfe8ff", 2, 0.4 * f, true);
+    if (!t.frostCrystals) t.frostCrystals = genFrostCrystals(t.x, t.y, range);
+    const n = Math.floor(t.frostCrystals.length * Math.min(1, f));
+    for (let i = 0; i < n; i++) {
+      const c = t.frostCrystals[i];
+      r.disc(c.x, c.y, c.r, "#ffffff", 0.5, true);
+    }
+  }
+}
+
+// Stable scatter of crystal positions inside the field (generated once per
+// tower so they don't flicker; revealed in index order as the field builds).
+function genFrostCrystals(cx, cy, range) {
+  const out = [];
+  for (let i = 0; i < 44; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const rad = Math.sqrt(Math.random()) * range * 0.95;
+    out.push({ x: cx + Math.cos(a) * rad, y: cy + Math.sin(a) * rad, r: 0.8 + Math.random() * 1.6 });
+  }
+  return out;
+}
+
 function drawPlacementPreview(r) {
   if (!Game.selectedType || !Game.hoverCell) return;
   const { cx, cy } = Game.hoverCell;
@@ -413,8 +444,38 @@ function drawOverlays(ctx) {
 function render() {
   // World is painted by the active renderer (Canvas-2D or WebGL).
   const r = Game.renderer;
+
+  // Frost fields drive the WebGL displacement post-process (no-op in 2D).
+  const frost = [];
+  for (const t of Game.towers) {
+    if (t.def.projectile === "pulse" && t.freeze > 0.02) {
+      frost.push({ x: t.x, y: t.y, r: t.def.range, intensity: t.freeze });
+    }
+  }
+  // Towers sitting inside a frost field get shielded from the warp so the
+  // structures stay readable while the ground around them ripples.
+  const protect = [];
+  if (frost.length) {
+    const pad = FrostParams.protectRadius;
+    for (const t of Game.towers) {
+      for (const f of frost) {
+        const rr = f.r + pad;
+        if (dist2(t.x, t.y, f.x, f.y) <= rr * rr) { protect.push({ x: t.x, y: t.y }); break; }
+      }
+    }
+  }
+  r.setFrostFields(frost, protect);
+
+  // Sniper bullets radiate chromatic aberration through the post-process.
+  const chroma = [];
+  for (const p of Game.projectiles) {
+    if (p.kind === "rail") chroma.push({ x: p.x, y: p.y });
+  }
+  r.setChromaPoints(chroma);
+
   r.beginFrame();
   GameMap.draw(r);
+  drawFrostGround(r);
   drawPlacementPreview(r);
   for (const t of Game.towers) t.draw(r);
   for (const e of Game.enemies) e.draw(r);
@@ -441,9 +502,70 @@ function frame(time) {
   requestAnimationFrame(frame);
 }
 
+// Optional lil-gui panel for live-tuning the frost/displacement params. Guards
+// on lil-gui being loaded (it's a CDN script), so the game runs fine without it.
+function buildDebugUI() {
+  const NS = window.lil;
+  if (!NS || !NS.GUI) return;
+  const gui = new NS.GUI({ title: "Debug — Frost" });
+  const d = gui.addFolder("Displacement");
+  d.add(FrostParams, "displaceAmp", 0, 20, 0.1).name("warp amount");
+  d.add(FrostParams, "displaceFreq", 0.1, 3, 0.05).name("warp frequency");
+  d.add(FrostParams, "tint", 0, 1, 0.01).name("ice tint");
+  d.add(FrostParams, "sparkle", 0, 2, 0.01).name("sparkle");
+  const p = gui.addFolder("Tower protection");
+  p.add(FrostParams, "protectStrength", 0, 1, 0.01).name("strength");
+  p.add(FrostParams, "protectRadius", 0, 60, 1).name("radius (px)");
+  const b = gui.addFolder("Field buildup");
+  b.add(FrostParams, "restLevel", 0, 1, 0.01).name("rest level");
+  b.add(FrostParams, "rampUp", 0.1, 4, 0.05).name("ramp up");
+  b.add(FrostParams, "rampDown", 0.1, 4, 0.05).name("ramp down");
+  const c = gui.addFolder("Sniper chroma");
+  c.add(ChromaParams, "strength", 0, 20, 0.1).name("separation (px)");
+  c.add(ChromaParams, "radius", 5, 150, 1).name("radius (px)");
+  c.add(ChromaParams, "blur", 0, 20, 0.1).name("blur (px)");
+  makeGuiDraggable(gui);
+}
+
+// lil-gui pins itself top-right and isn't draggable; let the title bar move it.
+// A plain click (no drag) still collapses/expands as usual.
+function makeGuiDraggable(gui) {
+  const el = gui.domElement;
+  const title = el.querySelector(".title");
+  if (!title) return;
+  const rect = el.getBoundingClientRect();
+  el.style.position = "fixed";
+  el.style.right = "auto";
+  el.style.left = rect.left + "px";
+  el.style.top = rect.top + "px";
+  title.style.cursor = "move";
+
+  let dragging = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
+  title.addEventListener("mousedown", (e) => {
+    dragging = true; moved = false;
+    sx = e.clientX; sy = e.clientY;
+    const r = el.getBoundingClientRect();
+    ox = r.left; oy = r.top;
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+    el.style.left = (ox + dx) + "px";
+    el.style.top = (oy + dy) + "px";
+  });
+  window.addEventListener("mouseup", () => { dragging = false; });
+  // Swallow the collapse-toggle click only when we actually dragged.
+  title.addEventListener("click", (e) => {
+    if (moved) { e.stopImmediatePropagation(); moved = false; }
+  }, true);
+}
+
 function start() {
   buildShop();
   bindInput();
+  buildDebugUI();
   newMap();
   // Refit on resize while nothing is at stake; mid-game the canvas just
   // stretches via CSS so the layout (and your towers) stay intact.
