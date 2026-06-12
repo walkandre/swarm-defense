@@ -74,13 +74,21 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
-  }
-  canvas {
-    display: block;
-    width: 100%;
-    height: 100%;
+    position: relative;
     background: #181b22;
   }
+  /* Three stacked layers: WebGL world, 2D world, and the always-on-top HUD
+     overlay. Only the overlay receives pointer events; the world canvases are
+     transparent so whichever one is hidden lets the backdrop show through. */
+  canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    pointer-events: none;
+  }
+  #overlay { pointer-events: auto; }
   #tip {
     padding: 4px 16px;
     font-size: 12px;
@@ -99,14 +107,20 @@
     <div class="stat"><span>Wave</span><b id="wave-val">0</b></div>
     <div id="shop"></div>
     <div class="spacer"></div>
+    <button id="toggle-view" title="Toggle the renderer (V)">View: 2D</button>
     <button id="start-wave">Start Wave</button>
     <button id="new-map">New Map</button>
   </div>
-  <div id="canvas-wrap"><canvas id="game"></canvas></div>
+  <div id="canvas-wrap">
+    <canvas id="game-gl"></canvas>
+    <canvas id="game"></canvas>
+    <canvas id="overlay"></canvas>
+  </div>
   <div id="tip">Click to place the selected tower &middot; Right-click a tower to sell (70%) &middot; Keys 1&ndash;4 select towers, Esc cancels &middot; Enemies march right &rarr; left</div>
 </div>
 <script src="js/util.js"></script>
 <script src="js/tiles.js"></script>
+<script src="js/renderer.js"></script>
 <script src="js/map.js"></script>
 <script src="js/enemies.js"></script>
 <script src="js/towers.js"></script>

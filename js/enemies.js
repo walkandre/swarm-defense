@@ -116,38 +116,26 @@ class Enemy {
     if (this.hitFlash > 0) this.hitFlash -= dt;
   }
 
-  draw(ctx) {
+  draw(rd) {
     const r = this.radius;
     const sprite = Tileset.ENEMIES[this.type];
     const size = r * 2.6;
     // Slow tint ring (drawn under the sprite).
     if (this.slowTimer > 0) {
-      ctx.beginPath();
-      ctx.arc(this.x, this.y, r + 3, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(120, 200, 255, 0.85)";
-      ctx.lineWidth = 2;
-      ctx.stroke();
+      rd.ring(this.x, this.y, r + 3, "rgb(120, 200, 255)", 2, 0.85);
     }
-    Tileset.draw(ctx, sprite.tile, this.x - size / 2, this.y - size / 2, size, size, sprite.flip);
+    rd.sprite(sprite.tile, this.x - size / 2, this.y - size / 2, size, size, sprite.flip);
     // Brief white flash when hit.
     if (this.hitFlash > 0) {
-      ctx.save();
-      ctx.globalAlpha = Math.min(1, this.hitFlash / 0.1) * 0.55;
-      ctx.globalCompositeOperation = "lighter";
-      ctx.beginPath();
-      ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = "#ffffff";
-      ctx.fill();
-      ctx.restore();
+      rd.disc(this.x, this.y, r, "#ffffff", Math.min(1, this.hitFlash / 0.1) * 0.55, true);
     }
     // Health bar (only when damaged).
     if (this.hp < this.maxHp) {
       const w = r * 2.2;
       const frac = Math.max(0, this.hp / this.maxHp);
-      ctx.fillStyle = "rgba(0,0,0,0.6)";
-      ctx.fillRect(this.x - w / 2, this.y - r - 7, w, 4);
-      ctx.fillStyle = frac > 0.5 ? "#7ae582" : frac > 0.25 ? "#ffd166" : "#ef476f";
-      ctx.fillRect(this.x - w / 2, this.y - r - 7, w * frac, 4);
+      rd.rect(this.x - w / 2, this.y - r - 7, w, 4, "rgba(0,0,0,0.6)");
+      rd.rect(this.x - w / 2, this.y - r - 7, w * frac, 4,
+        frac > 0.5 ? "#7ae582" : frac > 0.25 ? "#ffd166" : "#ef476f");
     }
   }
 }

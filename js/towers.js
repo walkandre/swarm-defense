@@ -94,22 +94,18 @@ class Tower {
     return Math.floor(this.def.cost * 0.7);
   }
 
-  draw(ctx) {
+  draw(r) {
     const cs = GameMap.CELL;
     // Structure sprite, drawn slightly larger than the cell so it reads as a
     // building sitting on the ground.
     const size = cs + 4;
     const off = (cs - size) / 2;
-    Tileset.draw(ctx, Tileset.TOWERS[this.type], this.cx * cs + off, this.cy * cs + off - 2, size, size);
+    r.sprite(Tileset.TOWERS[this.type], this.cx * cs + off, this.cy * cs + off - 2, size, size);
 
     // Expanding pulse ring for the frost tower.
     if (this.def.projectile === "pulse" && this.pulseAnim > 0) {
       const t = 1 - this.pulseAnim / 0.4;
-      ctx.beginPath();
-      ctx.arc(this.x, this.y, this.def.range * t, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(144, 224, 239, ${0.5 * (1 - t)})`;
-      ctx.lineWidth = 3;
-      ctx.stroke();
+      r.ring(this.x, this.y, this.def.range * t, "#90e0ef", 3, 0.5 * (1 - t));
     }
   }
 }
@@ -161,10 +157,7 @@ class Projectile {
     }
   }
 
-  draw(ctx) {
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, this.splash > 0 ? 5 : 3, 0, Math.PI * 2);
-    ctx.fillStyle = this.color;
-    ctx.fill();
+  draw(r) {
+    r.disc(this.x, this.y, this.splash > 0 ? 5 : 3, this.color);
   }
 }

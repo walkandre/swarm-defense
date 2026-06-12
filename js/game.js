@@ -61,8 +61,13 @@ function fitCanvas() {
   Game.dpr = window.devicePixelRatio || 1;
   Game.width = wrap.clientWidth;
   Game.height = wrap.clientHeight;
-  Game.canvas.width = Math.round(Game.width * Game.dpr);
-  Game.canvas.height = Math.round(Game.height * Game.dpr);
+  const bw = Math.round(Game.width * Game.dpr);
+  const bh = Math.round(Game.height * Game.dpr);
+  // All three stacked layers (2D world, WebGL world, HUD overlay) share size.
+  for (const c of [Game.canvas, Game.glCanvas, Game.overlayCanvas]) {
+    c.width = bw;
+    c.height = bh;
+  }
 }
 
 function newMap() {
@@ -118,7 +123,7 @@ function updateHud() {
 // ---------------------------------------------------------------- input
 
 function canvasCell(ev) {
-  const rect = Game.canvas.getBoundingClientRect();
+  const rect = Game.overlayCanvas.getBoundingClientRect();
   const scaleX = Game.width / rect.width;
   const scaleY = Game.height / rect.height;
   const x = (ev.clientX - rect.left) * scaleX;
@@ -127,7 +132,9 @@ function canvasCell(ev) {
 }
 
 function bindInput() {
-  const canvas = Game.canvas;
+  // The overlay (HUD) layer is always topmost and visible, so it receives the
+  // pointer events for both renderers.
+  const canvas = Game.overlayCanvas;
 
   canvas.addEventListener("mousemove", (ev) => {
     Game.hoverCell = canvasCell(ev);
@@ -166,10 +173,12 @@ function bindInput() {
     if (idx >= 0 && idx < keys.length) selectTower(keys[idx]);
     if (ev.key === "Escape") { Game.selectedType = null; updateHud(); }
     if (ev.key === " " && !Game.waveActive) { ev.preventDefault(); startWave(); }
+    if (ev.key === "v" || ev.key === "V") toggleView();
   });
 
   document.getElementById("start-wave").addEventListener("click", startWave);
   document.getElementById("new-map").addEventListener("click", newMap);
+  document.getElementById("toggle-view").addEventListener("click", toggleView);
 }
 
 // ---------------------------------------------------------------- update
@@ -235,7 +244,7 @@ function update(dt) {
 
 // ---------------------------------------------------------------- render
 
-function drawPlacementPreview(ctx) {
+function drawPlacementPreview(r) {
   if (!Game.selectedType || !Game.hoverCell) return;
   const { cx, cy } = Game.hoverCell;
   if (cx < 0 || cy < 0 || cx >= GameMap.cols || cy >= GameMap.rows) return;
@@ -244,17 +253,11 @@ function drawPlacementPreview(ctx) {
   const px = cx * cs + cs / 2;
   const py = cy * cs + cs / 2;
   const ok = GameMap.canBuild(cx, cy) && def.cost <= Game.gold;
+  const color = ok ? "#4fc3f7" : "#ef476f";
 
-  ctx.beginPath();
-  ctx.arc(px, py, def.range, 0, Math.PI * 2);
-  ctx.fillStyle = ok ? "rgba(79, 195, 247, 0.08)" : "rgba(239, 71, 111, 0.08)";
-  ctx.fill();
-  ctx.strokeStyle = ok ? "rgba(79, 195, 247, 0.4)" : "rgba(239, 71, 111, 0.4)";
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-
-  ctx.fillStyle = ok ? "rgba(79, 195, 247, 0.35)" : "rgba(239, 71, 111, 0.35)";
-  ctx.fillRect(cx * cs, cy * cs, cs, cs);
+  r.disc(px, py, def.range, color, 0.08);
+  r.ring(px, py, def.range, color, 1.5, 0.4);
+  r.rect(cx * cs, cy * cs, cs, cs, color, 0.35);
 }
 
 // Burst of glowing embers + shockwave + flash, tinted to the dying enemy.
@@ -286,38 +289,23 @@ function spawnExplosion(x, y, color, radius) {
   });
 }
 
-function drawEffects(ctx) {
+function drawEffects(r) {
   for (const fx of Game.effects) {
     if (fx.kind === "explosion") {
       const p = 1 - fx.t / fx.dur; // 0 → 1 over the effect's life
-      ctx.save();
-      ctx.globalCompositeOperation = "lighter";
 
-      // Core flash — bright, brief.
+      // Core flash — bright, brief (additive radial bloom).
       const flash = Math.max(0, 1 - p * 4);
       if (flash > 0) {
         const fr = fx.flashR * (0.5 + p * 1.5);
-        const g = ctx.createRadialGradient(fx.x, fx.y, 0, fx.x, fx.y, fr);
-        g.addColorStop(0, "rgba(255, 248, 220, " + (0.9 * flash) + ")");
-        g.addColorStop(0.4, fx.color);
-        g.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.globalAlpha = flash;
-        ctx.fillStyle = g;
-        ctx.beginPath();
-        ctx.arc(fx.x, fx.y, fr, 0, Math.PI * 2);
-        ctx.fill();
+        r.glow(fx.x, fx.y, fr, fx.color, flash);
       }
 
       // Expanding shockwave ring.
-      ctx.globalAlpha = Math.max(0, 1 - p) * 0.6;
-      ctx.beginPath();
-      ctx.arc(fx.x, fx.y, fx.waveR * p, 0, Math.PI * 2);
-      ctx.strokeStyle = fx.color;
-      ctx.lineWidth = Math.max(1, 3 * (1 - p));
-      ctx.stroke();
+      r.ring(fx.x, fx.y, fx.waveR * p, fx.color, Math.max(1, 3 * (1 - p)),
+        Math.max(0, 1 - p) * 0.6, true);
 
       // Embers — integrate motion, fade, and cool toward red.
-      ctx.fillStyle = fx.color;
       for (const e of fx.particles) {
         const el = p * fx.dur / e.life; // 0 → 1+ over particle's own life
         if (el >= 1) continue;
@@ -325,31 +313,13 @@ function drawEffects(ctx) {
         e.y += e.vy * 0.016;
         e.vx *= 0.92;
         e.vy = e.vy * 0.92 + 60 * 0.016; // gravity
-        ctx.globalAlpha = (1 - el) * 0.9;
-        ctx.beginPath();
-        ctx.arc(e.x, e.y, e.r * (1 - el * 0.6), 0, Math.PI * 2);
-        ctx.fill();
+        r.disc(e.x, e.y, e.r * (1 - el * 0.6), fx.color, (1 - el) * 0.9, true);
       }
-      ctx.restore();
-      ctx.globalAlpha = 1;
     } else if (fx.kind === "beam") {
-      ctx.beginPath();
-      ctx.moveTo(fx.x1, fx.y1);
-      ctx.lineTo(fx.x2, fx.y2);
-      ctx.strokeStyle = fx.color;
-      ctx.globalAlpha = Math.max(0, fx.t / 0.12);
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
-      ctx.globalAlpha = 1;
+      r.line(fx.x1, fx.y1, fx.x2, fx.y2, fx.color, 2.5, Math.max(0, fx.t / 0.12));
     } else if (fx.kind === "blast") {
       const t = 1 - fx.t / 0.25;
-      ctx.beginPath();
-      ctx.arc(fx.x, fx.y, fx.r * (0.4 + 0.6 * t), 0, Math.PI * 2);
-      ctx.strokeStyle = fx.color;
-      ctx.globalAlpha = (1 - t) * 0.8;
-      ctx.lineWidth = 3;
-      ctx.stroke();
-      ctx.globalAlpha = 1;
+      r.ring(fx.x, fx.y, fx.r * (0.4 + 0.6 * t), fx.color, 3, (1 - t) * 0.8);
     }
   }
 }
@@ -383,18 +353,24 @@ function drawOverlays(ctx) {
 }
 
 function render() {
-  const ctx = Game.ctx;
-  ctx.setTransform(Game.dpr, 0, 0, Game.dpr, 0, 0);
-  // Crisp pixel-art scaling; resizing the canvas resets this each time.
-  ctx.imageSmoothingEnabled = false;
-  ctx.clearRect(0, 0, Game.width, Game.height);
-  GameMap.draw(ctx);
-  drawPlacementPreview(ctx);
-  for (const t of Game.towers) t.draw(ctx);
-  for (const e of Game.enemies) e.draw(ctx);
-  for (const p of Game.projectiles) p.draw(ctx);
-  drawEffects(ctx);
-  drawOverlays(ctx);
+  // World is painted by the active renderer (Canvas-2D or WebGL).
+  const r = Game.renderer;
+  r.beginFrame();
+  GameMap.draw(r);
+  drawPlacementPreview(r);
+  for (const t of Game.towers) t.draw(r);
+  for (const e of Game.enemies) e.draw(r);
+  for (const p of Game.projectiles) p.draw(r);
+  drawEffects(r);
+  r.endFrame();
+
+  // HUD overlays always render in Canvas-2D on the top layer, regardless of
+  // which world renderer is active.
+  const octx = Game.overlayCtx;
+  octx.setTransform(Game.dpr, 0, 0, Game.dpr, 0, 0);
+  octx.imageSmoothingEnabled = false;
+  octx.clearRect(0, 0, Game.width, Game.height);
+  drawOverlays(octx);
 }
 
 // ---------------------------------------------------------------- loop
@@ -419,9 +395,42 @@ function start() {
   requestAnimationFrame(frame);
 }
 
+// Swap which renderer/canvas is live. The world has two stacked canvases
+// (2D + WebGL); only one is shown. The overlay canvas (HUD) always sits on top.
+function applyViewMode() {
+  const gl = Game.useWebGL && Game.rendererGL.supported;
+  Game.useWebGL = gl;
+  Game.renderer = gl ? Game.rendererGL : Game.renderer2d;
+  Game.canvas.style.display = gl ? "none" : "block";
+  Game.glCanvas.style.display = gl ? "block" : "none";
+  const btn = document.getElementById("toggle-view");
+  if (btn) {
+    btn.textContent = gl ? "View: WebGL" : "View: 2D";
+    btn.disabled = !Game.rendererGL.supported;
+    btn.title = Game.rendererGL.supported
+      ? "Toggle the renderer (V)"
+      : "WebGL is not available in this browser";
+  }
+}
+
+function toggleView() {
+  if (!Game.rendererGL.supported) return;
+  Game.useWebGL = !Game.useWebGL;
+  applyViewMode();
+}
+
 function init() {
-  Game.canvas = document.getElementById("game");
-  Game.ctx = Game.canvas.getContext("2d");
+  Game.glCanvas = document.getElementById("game-gl");
+  Game.canvas = document.getElementById("game");          // 2D world layer
+  Game.overlayCanvas = document.getElementById("overlay"); // HUD layer (always 2D)
+  Game.overlayCtx = Game.overlayCanvas.getContext("2d");
+
+  Game.renderer2d = new Canvas2DRenderer(Game.canvas);
+  Game.rendererGL = new WebGLRenderer(Game.glCanvas);
+  Game.useWebGL = false;
+  Game.renderer = Game.renderer2d;
+  applyViewMode();
+
   // Start once the tilemap is decoded so the first frame has its sprites.
   Tileset.load(start);
 }

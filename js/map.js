@@ -273,7 +273,7 @@ const GameMap = {
     return m;
   },
 
-  draw(ctx) {
+  draw(r) {
     const cs = this.CELL;
     // Ground: grass over the whole canvas, including the remainder strip and
     // any partial row/column beyond the cell grid.
@@ -282,7 +282,7 @@ const GameMap = {
     for (let x = 0; x < cols; x++) {
       for (let y = 0; y < rows; y++) {
         const d = (this.deco[x] && this.deco[x][y]) || null;
-        Tileset.draw(ctx, d ? d.grass : Tileset.GRASS, x * cs, y * cs, cs, cs);
+        r.sprite(d ? d.grass : Tileset.GRASS, x * cs, y * cs, cs, cs);
       }
     }
 
@@ -290,7 +290,7 @@ const GameMap = {
     for (let x = 0; x < this.cols; x++) {
       for (let y = 0; y < this.rows; y++) {
         if (!this.water[x][y]) continue;
-        Tileset.draw(ctx, Tileset.WATER[this._waterMask(x, y)], x * cs, y * cs, cs, cs);
+        r.sprite(Tileset.WATER[this._waterMask(x, y)], x * cs, y * cs, cs, cs);
       }
     }
 
@@ -302,13 +302,12 @@ const GameMap = {
     // off there lets the grass show through the curl instead of a grey wedge.
     // Their road-facing edges are fully opaque, so no seam is exposed to the
     // paved neighbour.
-    ctx.fillStyle = Tileset.ROAD_BASE;
     for (let x = 0; x < this.cols; x++) {
       for (let y = 0; y < this.rows; y++) {
         if (!this.grid[x][y]) continue;
         const m = this._roadMask(x, y);
         if (m === 3 || m === 6 || m === 9 || m === 12) continue; // convex corner
-        ctx.fillRect(x * cs, y * cs, cs, cs);
+        r.rect(x * cs, y * cs, cs, cs, Tileset.ROAD_BASE);
       }
     }
     for (let x = 0; x < this.cols; x++) {
@@ -316,7 +315,7 @@ const GameMap = {
         if (!this.grid[x][y]) continue;
         const m = this._roadMask(x, y);
         if (m === 15) continue; // fully surrounded: leave smooth asphalt
-        Tileset.draw(ctx, Tileset.ROAD[m], x * cs, y * cs, cs, cs);
+        r.sprite(Tileset.ROAD[m], x * cs, y * cs, cs, cs);
       }
     }
 
@@ -325,24 +324,21 @@ const GameMap = {
       const first = path.waypoints[0];
       const last = path.waypoints[path.waypoints.length - 1];
       const stripX = this.cols * cs;
-      ctx.fillStyle = Tileset.ROAD_BASE;
-      ctx.fillRect(stripX, first.y - cs, this.pixelW - stripX, cs * 2);
+      r.rect(stripX, first.y - cs, this.pixelW - stripX, cs * 2, Tileset.ROAD_BASE);
       for (let x = stripX; x < this.pixelW; x += cs) {
-        Tileset.draw(ctx, Tileset.ROAD[14], x, first.y - cs, cs, cs); // top lane (E S W)
-        Tileset.draw(ctx, Tileset.ROAD[11], x, first.y, cs, cs);      // bottom lane (N E W)
+        r.sprite(Tileset.ROAD[14], x, first.y - cs, cs, cs); // top lane (E S W)
+        r.sprite(Tileset.ROAD[11], x, first.y, cs, cs);      // bottom lane (N E W)
       }
       // Entry (right) / exit (left) markers.
-      ctx.fillStyle = "rgba(239, 71, 111, 0.55)";
-      ctx.fillRect(this.pixelW - 5, first.y - cs, 5, cs * 2);
-      ctx.fillStyle = "rgba(79, 195, 247, 0.55)";
-      ctx.fillRect(0, last.y - cs, 5, cs * 2);
+      r.rect(this.pixelW - 5, first.y - cs, 5, cs * 2, "rgba(239, 71, 111, 0.55)");
+      r.rect(0, last.y - cs, 5, cs * 2, "rgba(79, 195, 247, 0.55)");
     }
 
     // Tree overlays last so canopies sit above the ground and road edges.
     for (let x = 0; x < this.cols; x++) {
       for (let y = 0; y < this.rows; y++) {
         const d = this.deco[x][y];
-        if (d && d.overlay) Tileset.draw(ctx, d.overlay, x * cs, y * cs, cs, cs);
+        if (d && d.overlay) r.sprite(d.overlay, x * cs, y * cs, cs, cs);
       }
     }
   },
