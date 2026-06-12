@@ -29,6 +29,18 @@ function lerp(a, b, t) {
   return a + (b - a) * t;
 }
 
+// Squared distance from point (px,py) to the segment (ax,ay)-(bx,by). Used for
+// swept hit tests so a fast projectile can't tunnel past a thin enemy.
+function segDist2(ax, ay, bx, by, px, py) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const cx = ax + t * dx, cy = ay + t * dy;
+  const ex = px - cx, ey = py - cy;
+  return ex * ex + ey * ey;
+}
+
 // Simple spatial hash for circle-vs-circle broad phase.
 class SpatialHash {
   constructor(cellSize) {

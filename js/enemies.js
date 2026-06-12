@@ -1,5 +1,9 @@
 "use strict";
 
+// How long an impact jolt / explosive warp lasts on a hit enemy.
+const SHAKE_DUR = 0.18;
+const WARP_DUR = 0.4;
+
 const ENEMY_TYPES = {
   grunt:     { hp: 42,  speed: 55,  radius: 9,  gold: 5,  color: "#e07a5f", mass: 1.0 },
   runner:    { hp: 22,  speed: 105, radius: 7,  gold: 6,  color: "#f2cc8f", mass: 0.6 },
@@ -36,9 +40,31 @@ class Enemy {
     this.slowTimer = 0;
     this.slowFactor = 1;
     this.hitFlash = 0;
+    this.shakeT = 0;    // impact jolt timer
+    this.shakeMag = 0;
+    this.warpT = 0;     // explosive-round warp timer
+    this.stunT = 0;     // critical-hit disable timer (can't move while > 0)
+    this.animClock = 0; // local time accumulator for effect animation phase
     this.dead = false;
     this.reachedEnd = false;
     this.wobble = rng() * Math.PI * 2;
+  }
+
+  // Critical hit: freeze the enemy in place for `dur` seconds.
+  addStun(dur) {
+    this.stunT = Math.max(this.stunT, dur);
+  }
+
+  // Brief positional jitter from a hit (kept to the strongest pending jolt).
+  addShake(mag) {
+    this.shakeT = SHAKE_DUR;
+    this.shakeMag = Math.max(this.shakeMag, mag);
+  }
+
+  // Explosive round: squash/stretch + violent jolt, as if warped/displaced.
+  addWarp() {
+    this.warpT = WARP_DUR;
+    this.addShake(3);
   }
 
   speed() {
@@ -66,6 +92,13 @@ class Enemy {
   }
 
   update(dt) {
+    // Stunned (critical hit): hold position — still tick timers and absorb
+    // shoves from the swarm via resolveEnemyCollisions, just don't advance.
+    if (this.stunT > 0) {
+      this.tickTimers(dt);
+      return;
+    }
+
     const wps = this.path.waypoints;
 
     if (this.wpIndex >= wps.length) {
@@ -114,27 +147,62 @@ class Enemy {
   tickTimers(dt) {
     if (this.slowTimer > 0) this.slowTimer -= dt;
     if (this.hitFlash > 0) this.hitFlash -= dt;
+    if (this.shakeT > 0) this.shakeT -= dt;
+    if (this.warpT > 0) this.warpT -= dt;
+    if (this.stunT > 0) this.stunT -= dt;
+    this.animClock += dt;
   }
 
   draw(rd) {
     const r = this.radius;
     const sprite = Tileset.ENEMIES[this.type];
     const size = r * 2.6;
+
+    // Impact shake offsets the whole unit; an explosive warp also squashes and
+    // stretches the sprite (non-uniform scale) for a displaced look.
+    let ox = 0, oy = 0, sw = size, sh = size;
+    if (this.shakeT > 0) {
+      const m = this.shakeMag * (this.shakeT / SHAKE_DUR);
+      ox += (Math.random() * 2 - 1) * m;
+      oy += (Math.random() * 2 - 1) * m;
+    }
+    if (this.warpT > 0) {
+      const wf = this.warpT / WARP_DUR;
+      const osc = Math.sin((WARP_DUR - this.warpT) * 46);
+      sw = size * (1 + osc * 0.55 * wf);
+      sh = size * (1 - osc * 0.55 * wf);
+    }
+    const x = this.x + ox, y = this.y + oy;
+
     // Slow tint ring (drawn under the sprite).
     if (this.slowTimer > 0) {
-      rd.ring(this.x, this.y, r + 3, "rgb(120, 200, 255)", 2, 0.85);
+      rd.ring(x, y, r + 3, "rgb(120, 200, 255)", 2, 0.85);
     }
-    rd.sprite(sprite.tile, this.x - size / 2, this.y - size / 2, size, size, sprite.flip);
+    rd.sprite(sprite.tile, x - sw / 2, y - sh / 2, sw, sh, sprite.flip);
+    // Warp aura while displaced.
+    if (this.warpT > 0) {
+      rd.glow(x, y, r + 6, "#c08bff", 0.5 * (this.warpT / WARP_DUR));
+    }
+    // Stun crackle: a pulsing ring plus little sparks orbiting overhead.
+    if (this.stunT > 0) {
+      const c = this.animClock;
+      rd.ring(x, y, r + 4, "#ffe066", 1.5, 0.4 + 0.4 * Math.sin(c * 18), true);
+      for (let k = 0; k < 3; k++) {
+        const ang = c * 7 + k * 2.094;
+        rd.disc(x + Math.cos(ang) * (r + 4), y - r - 4 + Math.sin(ang) * 2.5,
+          1.4, "#fff2a0", 0.9, true);
+      }
+    }
     // Brief white flash when hit.
     if (this.hitFlash > 0) {
-      rd.disc(this.x, this.y, r, "#ffffff", Math.min(1, this.hitFlash / 0.1) * 0.55, true);
+      rd.disc(x, y, r, "#ffffff", Math.min(1, this.hitFlash / 0.1) * 0.55, true);
     }
     // Health bar (only when damaged).
     if (this.hp < this.maxHp) {
       const w = r * 2.2;
       const frac = Math.max(0, this.hp / this.maxHp);
-      rd.rect(this.x - w / 2, this.y - r - 7, w, 4, "rgba(0,0,0,0.6)");
-      rd.rect(this.x - w / 2, this.y - r - 7, w * frac, 4,
+      rd.rect(x - w / 2, y - r - 7, w, 4, "rgba(0,0,0,0.6)");
+      rd.rect(x - w / 2, y - r - 7, w * frac, 4,
         frac > 0.5 ? "#7ae582" : frac > 0.25 ? "#ffd166" : "#ef476f");
     }
   }

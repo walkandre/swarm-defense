@@ -315,6 +315,64 @@ function drawEffects(r) {
         e.vy = e.vy * 0.92 + 60 * 0.016; // gravity
         r.disc(e.x, e.y, e.r * (1 - el * 0.6), fx.color, (1 - el) * 0.9, true);
       }
+    } else if (fx.kind === "casing") {
+      // Spent brass arcing out of the gunner and bouncing. Simulated here with
+      // a fixed step (like the explosion embers): z is height above ground.
+      const dts = 0.016;
+      fx.vz -= 420 * dts;          // gravity
+      fx.z += fx.vz * dts;
+      if (fx.z <= 0) {
+        fx.z = 0;
+        if (fx.vz < 0) fx.vz = -fx.vz * 0.42; // bounce, shed energy
+        fx.vx *= 0.6; fx.vy *= 0.6;           // ground friction
+        fx.vrot *= 0.6;
+      }
+      fx.x += fx.vx * dts;
+      fx.y += fx.vy * dts;
+      fx.rot += fx.vrot * dts;
+      const fade = Math.min(1, fx.t / 0.2);    // fade out in the last 0.2s
+      const len = fx.len || 3.2;
+      // Ground shadow: larger and fainter the higher it is.
+      r.disc(fx.x, fx.y, 2.2 + fx.z * 0.04, "#000000",
+        0.3 * fade * (1 - Math.min(0.6, fx.z / 60)));
+      // The casing: a short brass capsule lifted to its height, plus a glint.
+      const cx = fx.x, cy = fx.y - fx.z;
+      const ux = Math.cos(fx.rot) * len, uy = Math.sin(fx.rot) * len;
+      r.line(cx - ux, cy - uy, cx + ux, cy + uy, fx.color || "#d9b44a", 2.5 + len * 0.2, fade);
+      r.disc(cx + ux * 0.5, cy + uy * 0.5, 1.3, "#fff3c0", fade * 0.9, true);
+    } else if (fx.kind === "fire") {
+      // A patch of ground burning: additive flame tongues rising + fading,
+      // with gray smoke puffs drifting up after them. Driven by the effect age,
+      // so it's frame-rate independent.
+      const age = fx.dur - fx.t;
+      for (const p of fx.flames) {
+        const lt = (age - p.delay) / p.life;
+        if (lt < 0 || lt >= 1) continue;
+        const flick = 0.7 + 0.3 * Math.sin((age + p.delay) * 40 + p.dx);
+        const px = fx.x + p.dx * (1 - lt * 0.3);
+        const py = fx.y - p.rise * lt;
+        const a = (1 - lt) * flick;
+        const sz = p.r * (1 - lt * 0.4);
+        r.glow(px, py, sz * 1.8, "#ff7b29", a * 0.6);
+        r.disc(px, py, sz * 0.6, "#ffd86b", a, true);
+      }
+      for (const p of fx.smoke) {
+        const lt = (age - p.delay) / p.life;
+        if (lt < 0 || lt >= 1) continue;
+        const px = fx.x + p.dx + lt * 3;
+        const py = fx.y - p.rise * lt - 4;
+        const sz = p.r * (1 + lt * 1.6);
+        r.disc(px, py, sz, "#2c2c2c", Math.sin(lt * Math.PI) * 0.28);
+      }
+    } else if (fx.kind === "warp") {
+      // Explosive round: concentric shock rings rippling outward + a core flash.
+      const p = 1 - fx.t / fx.dur;
+      for (let k = 0; k < 3; k++) {
+        const rp = p - k * 0.12;
+        if (rp < 0 || rp > 1) continue;
+        r.ring(fx.x, fx.y, fx.r * rp, fx.color, 3 * (1 - rp) + 1, (1 - rp) * 0.6, true);
+      }
+      r.glow(fx.x, fx.y, fx.r * (0.3 + p * 0.35), fx.color, Math.max(0, 1 - p * 3) * 0.85);
     } else if (fx.kind === "beam") {
       r.line(fx.x1, fx.y1, fx.x2, fx.y2, fx.color, 2.5, Math.max(0, fx.t / 0.12));
     } else if (fx.kind === "blast") {
