@@ -427,7 +427,9 @@ function init() {
 
   Game.renderer2d = new Canvas2DRenderer(Game.canvas);
   Game.rendererGL = new WebGLRenderer(Game.glCanvas);
-  Game.useWebGL = false;
+  // Prefer WebGL when the browser supports it; applyViewMode falls back to 2D
+  // if the context failed to create.
+  Game.useWebGL = true;
   Game.renderer = Game.renderer2d;
   applyViewMode();
 
