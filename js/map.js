@@ -91,10 +91,43 @@ const GameMap = {
     // A river half the time — or always, if no lake found a home, so every map
     // gets some water.
     if (placed === 0 || rng() < 0.5) this._buildRiver(rng);
+
+    this._tidyWater();
+  },
+
+  // The water sprites only cover bodies that are at least two cells thick:
+  // the sheet has the full 8-direction shore set plus a vertical-river tile,
+  // but no 1-wide horizontal river, no end caps, and no isolated tile. Any such
+  // cell would fall back to a wrong sprite (a shoreless edge, or the waterfall
+  // tile sticking out the side of a lake). So erode every cell that can't be
+  // shored cleanly: one with fewer than two orthogonal water neighbours (an
+  // isolated cell or a 1-wide tip/cap) or one whose only neighbours are E+W (a
+  // 1-wide horizontal strip). Removing a tip can expose a new one, so repeat to
+  // a fixed point. A clean 2-wide body has no such cells, so it is untouched.
+  _tidyWater() {
+    for (let pass = 0; pass < 8; pass++) {
+      const remove = [];
+      for (let x = 0; x < this.cols; x++) {
+        for (let y = 0; y < this.rows; y++) {
+          if (!this.water[x][y]) continue;
+          let mask = 0, n = 0;
+          if (this.isWater(x, y - 1)) { mask |= 1; n++; }
+          if (this.isWater(x + 1, y)) { mask |= 2; n++; }
+          if (this.isWater(x, y + 1)) { mask |= 4; n++; }
+          if (this.isWater(x - 1, y)) { mask |= 8; n++; }
+          if (n < 2 || mask === 10) remove.push(x, y);
+        }
+      }
+      if (remove.length === 0) break;
+      for (let i = 0; i < remove.length; i += 2) this.water[remove[i]][remove[i + 1]] = false;
+    }
   },
 
   _buildRiver(rng) {
-    const width = randInt(rng, 1, 2);
+    // Always 2 cells wide: a 1-wide river has no clean sprite (no horizontal
+    // river tile, and its end caps are shoreless). _tidyWater enforces this too,
+    // but starting at width 2 keeps the river full-length instead of eroded away.
+    const width = 2;
     if (rng() < 0.5) {
       let y = randInt(rng, 3, this.rows - 4);
       for (let x = 0; x < this.cols; x++) {
