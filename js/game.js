@@ -204,7 +204,10 @@ function update(dt) {
   // Deaths and leaks.
   let goldEarned = 0;
   for (const e of Game.enemies) {
-    if (e.dead) goldEarned += e.def.gold;
+    if (e.dead) {
+      goldEarned += e.def.gold;
+      spawnExplosion(e.x, e.y, e.def.color, e.radius);
+    }
     if (e.reachedEnd) Game.lives--;
   }
   if (goldEarned > 0) Game.gold += goldEarned;
@@ -254,9 +257,82 @@ function drawPlacementPreview(ctx) {
   ctx.fillRect(cx * cs, cy * cs, cs, cs);
 }
 
+// Burst of glowing embers + shockwave + flash, tinted to the dying enemy.
+// Bigger enemies make a bigger, longer-lived blast.
+function spawnExplosion(x, y, color, radius) {
+  const scale = radius / 9; // grunt radius is the baseline
+  const count = Math.round(10 + radius * 1.2);
+  const particles = [];
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = (35 + Math.random() * 90) * scale;
+    particles.push({
+      x, y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp - 18 * scale, // slight upward bias
+      r: (1.4 + Math.random() * 2.4) * scale,
+      life: 0.35 + Math.random() * 0.3,
+    });
+  }
+  Game.effects.push({
+    kind: "explosion",
+    x, y,
+    t: 0.5,
+    dur: 0.5,
+    color,
+    flashR: radius * 2.6,
+    waveR: radius * 4.5,
+    particles,
+  });
+}
+
 function drawEffects(ctx) {
   for (const fx of Game.effects) {
-    if (fx.kind === "beam") {
+    if (fx.kind === "explosion") {
+      const p = 1 - fx.t / fx.dur; // 0 → 1 over the effect's life
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+
+      // Core flash — bright, brief.
+      const flash = Math.max(0, 1 - p * 4);
+      if (flash > 0) {
+        const fr = fx.flashR * (0.5 + p * 1.5);
+        const g = ctx.createRadialGradient(fx.x, fx.y, 0, fx.x, fx.y, fr);
+        g.addColorStop(0, "rgba(255, 248, 220, " + (0.9 * flash) + ")");
+        g.addColorStop(0.4, fx.color);
+        g.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.globalAlpha = flash;
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(fx.x, fx.y, fr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Expanding shockwave ring.
+      ctx.globalAlpha = Math.max(0, 1 - p) * 0.6;
+      ctx.beginPath();
+      ctx.arc(fx.x, fx.y, fx.waveR * p, 0, Math.PI * 2);
+      ctx.strokeStyle = fx.color;
+      ctx.lineWidth = Math.max(1, 3 * (1 - p));
+      ctx.stroke();
+
+      // Embers — integrate motion, fade, and cool toward red.
+      ctx.fillStyle = fx.color;
+      for (const e of fx.particles) {
+        const el = p * fx.dur / e.life; // 0 → 1+ over particle's own life
+        if (el >= 1) continue;
+        e.x += e.vx * 0.016;
+        e.y += e.vy * 0.016;
+        e.vx *= 0.92;
+        e.vy = e.vy * 0.92 + 60 * 0.016; // gravity
+        ctx.globalAlpha = (1 - el) * 0.9;
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, e.r * (1 - el * 0.6), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    } else if (fx.kind === "beam") {
       ctx.beginPath();
       ctx.moveTo(fx.x1, fx.y1);
       ctx.lineTo(fx.x2, fx.y2);
