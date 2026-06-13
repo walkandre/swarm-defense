@@ -1,0 +1,286 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tilemap Atlas Annotator — Swarm Defense</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+    background: #11151c; color: #d7dde6; display: flex; height: 100vh; overflow: hidden;
+  }
+  #stage { flex: 1; overflow: auto; padding: 16px; }
+  canvas { image-rendering: pixelated; box-shadow: 0 0 0 1px #2a3140; display: block; }
+  #side {
+    width: 320px; flex: none; border-left: 1px solid #2a3140; background: #161b24;
+    padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;
+  }
+  h1 { font-size: 14px; margin: 0 0 4px; }
+  .muted { color: #7e8a9c; font-size: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #8b97a8; margin-bottom: 3px; }
+  input, select, textarea, button {
+    width: 100%; background: #0d1117; color: #d7dde6; border: 1px solid #2a3140;
+    border-radius: 6px; padding: 7px 8px; font: inherit;
+  }
+  textarea { resize: vertical; min-height: 64px; }
+  button { cursor: pointer; background: #1f6feb; border-color: #1f6feb; color: #fff; font-weight: 600; }
+  button.ghost { background: #0d1117; color: #d7dde6; border-color: #2a3140; font-weight: 500; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .field { display: none; flex-direction: column; gap: 10px; }
+  .field.on { display: flex; }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; background: #243; color: #8fe9b0; font-size: 11px; }
+  .sel { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 16px; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+  .toolbar button, .toolbar select { width: auto; flex: 1; min-width: 90px; }
+  #status { font-size: 12px; color: #7e8a9c; }
+  .legend { display: flex; gap: 12px; font-size: 11px; color: #8b97a8; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; vertical-align: -2px; margin-right: 4px; }
+  hr { border: none; border-top: 1px solid #2a3140; margin: 4px 0; }
+</style>
+
+<div id="stage"><canvas id="cv"></canvas></div>
+
+<div id="side">
+  <div>
+    <h1>Tilemap Atlas Annotator</h1>
+    <div class="muted">Click a tile, describe it, export the JSON. The game loads this atlas and resolves tiles by name.</div>
+  </div>
+
+  <div class="toolbar">
+    <select id="sheet">
+      <option value="../assets/tilemap.png">tilemap.png</option>
+      <option value="../assets/tilemap_space.png">tilemap_space.png</option>
+    </select>
+    <select id="scale">
+      <option value="2">2×</option>
+      <option value="3" selected>3×</option>
+      <option value="4">4×</option>
+      <option value="5">5×</option>
+    </select>
+  </div>
+
+  <div class="toolbar">
+    <button class="ghost" id="load">Reload JSON</button>
+    <button class="ghost" id="import">Import…</button>
+    <input id="file" type="file" accept="application/json" hidden>
+  </div>
+
+  <div class="legend">
+    <span><span class="sw" style="background:rgba(40,200,90,.55)"></span>annotated</span>
+    <span><span class="sw" style="background:rgba(255,210,60,.9)"></span>selected</span>
+  </div>
+  <div id="status">Loading…</div>
+
+  <hr>
+
+  <div class="field" id="form">
+    <div class="row">
+      <div>Tile <span class="sel" id="selKey">—</span></div>
+      <span class="pill" id="annBadge" style="display:none">annotated</span>
+    </div>
+    <div>
+      <label>Name (kebab-case)</label>
+      <input id="f_name" placeholder="e.g. tower_gunner" autocomplete="off">
+    </div>
+    <div>
+      <label>Category</label>
+      <select id="f_cat"></select>
+    </div>
+    <div>
+      <label>Description</label>
+      <textarea id="f_desc" placeholder="What is this tile? How is it used / drawn?"></textarea>
+    </div>
+    <div class="row">
+      <input id="f_flip" type="checkbox" style="width:auto"> <label style="margin:0">flip horizontally by default</label>
+    </div>
+    <div class="toolbar">
+      <button id="save">Save tile</button>
+      <button class="ghost" id="clear" style="flex:0 0 auto">Clear</button>
+    </div>
+  </div>
+  <div class="muted" id="hint">Pick a tile on the left to annotate it.</div>
+
+  <hr>
+  <div class="toolbar">
+    <button id="copy">Copy JSON</button>
+    <button class="ghost" id="download">Download</button>
+  </div>
+</div>
+
+<script>
+const TILE = 16, GAP = 1, COLS = 18, ROWS = 11, GUTTER = 22;
+const STEP = TILE + GAP;
+const ATLAS_PATH = "../assets/tilemap.atlas.json";
+const CATS = ["ground","decoration","water","road","tower","unit","enemy","fx","ui","unknown"];
+
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const img = new Image();
+let atlas = blankAtlas();
+let scale = 3, cell = TILE * scale;
+let sel = null; // {c,r}
+
+function blankAtlas() {
+  return {
+    "$schema": "tilemap.atlas.schema",
+    note: "Tile annotations keyed by \"col,row\" (0-indexed), matching js/tiles.js. The game loads this atlas at runtime and resolves tiles by name.",
+    image: "assets/tilemap.png", tileSize: TILE, spacing: GAP, margin: 0,
+    columns: COLS, rows: ROWS, categories: CATS.slice(), tiles: {}
+  };
+}
+const key = (c, r) => c + "," + r;
+
+// ---- load ----
+function loadSheet() {
+  const src = document.getElementById("sheet").value;
+  img.onload = draw;
+  img.onerror = () => setStatus("⚠ could not load image: " + src);
+  img.src = src;
+  atlas.image = "assets/" + src.split("/").pop();
+}
+async function loadAtlas() {
+  try {
+    const r = await fetch(ATLAS_PATH, { cache: "no-store" });
+    if (!r.ok) throw 0;
+    atlas = normalize(await r.json());
+    setStatus("");
+    refreshCats();
+    draw();
+    countStatus();
+  } catch (e) {
+    setStatus("Couldn't fetch the atlas (are you on file://? serve with python3 -m http.server). Starting blank — or use Import.");
+    refreshCats();
+    draw();
+  }
+}
+function normalize(a) {
+  a = Object.assign(blankAtlas(), a);
+  a.tiles = a.tiles || {};
+  if (!Array.isArray(a.categories) || !a.categories.length) a.categories = CATS.slice();
+  return a;
+}
+
+// ---- draw ----
+function draw() {
+  cell = TILE * scale;
+  cv.width = GUTTER + COLS * cell;
+  cv.height = GUTTER + ROWS * cell;
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = "#0d1117"; ctx.fillRect(0, 0, cv.width, cv.height);
+
+  // gutter labels
+  ctx.fillStyle = "#5c6b80"; ctx.font = "11px ui-monospace, monospace";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (let c = 0; c < COLS; c++) ctx.fillText(c, GUTTER + c * cell + cell / 2, GUTTER / 2);
+  for (let r = 0; r < ROWS; r++) ctx.fillText(r, GUTTER / 2, GUTTER + r * cell + cell / 2);
+
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const dx = GUTTER + c * cell, dy = GUTTER + r * cell;
+    if (img.complete && img.naturalWidth) {
+      const t = atlas.tiles[key(c, r)];
+      ctx.save();
+      if (t && t.flip) { ctx.translate(dx + cell, dy); ctx.scale(-1, 1);
+        ctx.drawImage(img, c * STEP, r * STEP, TILE, TILE, 0, 0, cell, cell); }
+      else ctx.drawImage(img, c * STEP, r * STEP, TILE, TILE, dx, dy, cell, cell);
+      ctx.restore();
+    }
+    if (atlas.tiles[key(c, r)]) { ctx.fillStyle = "rgba(40,200,90,.22)"; ctx.fillRect(dx, dy, cell, cell); }
+  }
+
+  // grid
+  ctx.strokeStyle = "rgba(140,160,190,.18)"; ctx.lineWidth = 1;
+  for (let c = 0; c <= COLS; c++) { ctx.beginPath(); ctx.moveTo(GUTTER + c * cell + .5, GUTTER); ctx.lineTo(GUTTER + c * cell + .5, cv.height); ctx.stroke(); }
+  for (let r = 0; r <= ROWS; r++) { ctx.beginPath(); ctx.moveTo(GUTTER, GUTTER + r * cell + .5); ctx.lineTo(cv.width, GUTTER + r * cell + .5); ctx.stroke(); }
+
+  if (sel) {
+    const dx = GUTTER + sel.c * cell, dy = GUTTER + sel.r * cell;
+    ctx.strokeStyle = "rgba(255,210,60,.95)"; ctx.lineWidth = 3;
+    ctx.strokeRect(dx + 1.5, dy + 1.5, cell - 3, cell - 3);
+  }
+}
+
+// ---- interaction ----
+cv.addEventListener("click", e => {
+  const rect = cv.getBoundingClientRect();
+  const x = (e.clientX - rect.left) * (cv.width / rect.width) - GUTTER;
+  const y = (e.clientY - rect.top) * (cv.height / rect.height) - GUTTER;
+  if (x < 0 || y < 0) return;
+  const c = Math.floor(x / cell), r = Math.floor(y / cell);
+  if (c < 0 || c >= COLS || r < 0 || r >= ROWS) return;
+  sel = { c, r };
+  openForm();
+  draw();
+});
+
+function refreshCats() {
+  const s = document.getElementById("f_cat");
+  s.innerHTML = "";
+  (atlas.categories || CATS).forEach(c => { const o = document.createElement("option"); o.value = o.textContent = c; s.appendChild(o); });
+}
+function openForm() {
+  const t = atlas.tiles[key(sel.c, sel.r)] || {};
+  document.getElementById("form").classList.add("on");
+  document.getElementById("hint").style.display = "none";
+  document.getElementById("selKey").textContent = "[" + sel.c + ", " + sel.r + "]";
+  document.getElementById("annBadge").style.display = atlas.tiles[key(sel.c, sel.r)] ? "" : "none";
+  document.getElementById("f_name").value = t.name || "";
+  document.getElementById("f_cat").value = t.category || "unknown";
+  document.getElementById("f_desc").value = t.desc || "";
+  document.getElementById("f_flip").checked = !!t.flip;
+  document.getElementById("f_name").focus();
+}
+document.getElementById("save").onclick = () => {
+  if (!sel) return;
+  const name = document.getElementById("f_name").value.trim();
+  if (!name) { document.getElementById("f_name").focus(); return; }
+  const t = { name, category: document.getElementById("f_cat").value, desc: document.getElementById("f_desc").value.trim() };
+  if (document.getElementById("f_flip").checked) t.flip = true;
+  atlas.tiles[key(sel.c, sel.r)] = t;
+  draw(); countStatus(); openForm();
+};
+document.getElementById("clear").onclick = () => {
+  if (!sel) return;
+  delete atlas.tiles[key(sel.c, sel.r)];
+  draw(); countStatus(); openForm();
+};
+
+// ---- export ----
+function serialize() {
+  // stable order: metadata first, tiles sorted by row then col
+  const ordered = {};
+  Object.keys(atlas.tiles).sort((a, b) => {
+    const [ca, ra] = a.split(",").map(Number), [cb, rb] = b.split(",").map(Number);
+    return ra - rb || ca - cb;
+  }).forEach(k => ordered[k] = atlas.tiles[k]);
+  const out = Object.assign({}, atlas, { tiles: ordered });
+  return JSON.stringify(out, null, 2) + "\n";
+}
+document.getElementById("copy").onclick = async () => {
+  try { await navigator.clipboard.writeText(serialize()); setStatus("Copied JSON to clipboard ✓ — paste into assets/tilemap.atlas.json"); }
+  catch { setStatus("Clipboard blocked — use Download instead."); }
+};
+document.getElementById("download").onclick = () => {
+  const blob = new Blob([serialize()], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "tilemap.atlas.json"; a.click();
+  URL.revokeObjectURL(a.href);
+};
+document.getElementById("import").onclick = () => document.getElementById("file").click();
+document.getElementById("file").onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => { try { atlas = normalize(JSON.parse(rd.result)); refreshCats(); draw(); countStatus(); setStatus("Imported " + f.name + " ✓"); } catch { setStatus("⚠ invalid JSON"); } };
+  rd.readAsText(f);
+};
+
+// ---- misc ----
+function setStatus(s) { document.getElementById("status").textContent = s; }
+function countStatus() {
+  const n = Object.keys(atlas.tiles).length, total = COLS * ROWS;
+  setStatus(n + " / " + total + " tiles annotated (" + (total - n) + " left)");
+}
+document.getElementById("sheet").onchange = loadSheet;
+document.getElementById("scale").onchange = e => { scale = +e.target.value; draw(); };
+
+loadSheet();
+loadAtlas();
+</script>
