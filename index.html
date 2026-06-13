@@ -55,7 +55,42 @@
   }
   button:hover { background: #313a4d; border-color: var(--accent); }
   button:disabled { opacity: 0.4; cursor: default; }
-  #shop { display: flex; gap: 8px; }
+  /* Hamburger menu: a toggle button and a dropdown that floats below it. */
+  #menu { position: relative; }
+  #menu-btn { font-size: 18px; line-height: 1; padding: 5px 12px; }
+  #menu-list {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 6px;
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px;
+    background: var(--panel);
+    border: 1px solid #3a4254;
+    border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+    z-index: 10;
+  }
+  #menu.open #menu-list { display: flex; }
+  #menu-list button { width: 100%; text-align: left; white-space: nowrap; }
+  /* Tower selection floats over the bottom of the map, horizontally centered. */
+  #shop {
+    position: absolute;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 8px;
+    padding: 8px;
+    background: rgba(29, 33, 43, 0.85);
+    border: 1px solid #3a4254;
+    border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    pointer-events: auto;
+    z-index: 2;
+  }
   .tower-btn {
     display: flex;
     flex-direction: column;
@@ -69,6 +104,49 @@
   .tower-btn .key { color: var(--dim); font-size: 10px; }
   .tower-btn.selected { border-color: var(--accent); background: #2a3a4d; box-shadow: 0 0 8px rgba(79,195,247,0.35); }
   .tower-btn.unaffordable small { color: var(--danger); }
+  .tower-btn .adv { color: var(--accent); font-size: 9px; opacity: 0.85; }
+  /* A slot wraps a base tower button and its advanced-variant popover. */
+  .tower-slot { position: relative; display: flex; }
+  .tower-pop {
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    margin-bottom: 10px;
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    width: 230px;
+    padding: 6px;
+    background: rgba(29, 33, 43, 0.97);
+    border: 1px solid #3a4254;
+    border-radius: 10px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+    z-index: 5;
+  }
+  /* Invisible bridge over the gap so moving from button to popover keeps hover. */
+  .tower-pop::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    height: 12px;
+  }
+  .tower-slot:hover .tower-pop { display: flex; }
+  .variant-btn {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 1px 8px;
+    text-align: left;
+    padding: 6px 9px;
+    line-height: 1.3;
+  }
+  .variant-btn small { color: var(--gold); font-size: 12px; }
+  .variant-btn i { grid-column: 1 / -1; color: var(--dim); font-size: 11px; font-style: normal; }
+  .variant-btn.selected { border-color: var(--accent); background: #2a3a4d; }
+  .variant-btn.unaffordable small { color: var(--danger); }
   #start-wave { border-color: var(--accent); font-weight: 600; }
   #canvas-wrap {
     flex: 1;
@@ -89,14 +167,6 @@
     pointer-events: none;
   }
   #overlay { pointer-events: auto; }
-  #tip {
-    padding: 4px 16px;
-    font-size: 12px;
-    color: var(--dim);
-    background: var(--panel);
-    border-top: 1px solid #000;
-    user-select: none;
-  }
 </style>
 </head>
 <body>
@@ -105,18 +175,23 @@
     <div class="stat"><span>Gold</span><b id="gold-val">0</b></div>
     <div class="stat"><span>Lives</span><b id="lives-val">0</b></div>
     <div class="stat"><span>Wave</span><b id="wave-val">0</b></div>
-    <div id="shop"></div>
     <div class="spacer"></div>
-    <button id="toggle-view" title="Toggle the renderer (V)">View: WebGL</button>
     <button id="start-wave">Start Wave</button>
-    <button id="new-map">New Map</button>
+    <div id="menu">
+      <button id="menu-btn" title="Menu" aria-haspopup="true" aria-expanded="false">&#9776;</button>
+      <div id="menu-list">
+        <button id="day-btn" title="Time of day — t cycles, Shift+T auto"></button>
+        <button id="new-map">New Map</button>
+        <button id="swap-tiles" title="Swap tileset (default / space)">Swap Tiles</button>
+      </div>
+    </div>
   </div>
   <div id="canvas-wrap">
     <canvas id="game-gl"></canvas>
     <canvas id="game"></canvas>
     <canvas id="overlay"></canvas>
+    <div id="shop"></div>
   </div>
-  <div id="tip">Click to place the selected tower &middot; Right-click a tower to sell (70%) &middot; Keys 1&ndash;4 select towers, Esc cancels &middot; Enemies march right &rarr; left</div>
 </div>
 <!-- Optional debug GUI; the game guards on its presence, so it's fine offline. -->
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19/dist/lil-gui.umd.min.js"></script>

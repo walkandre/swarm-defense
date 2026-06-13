@@ -44,6 +44,8 @@ class Enemy {
     this.shakeMag = 0;
     this.warpT = 0;     // explosive-round warp timer
     this.stunT = 0;     // critical-hit disable timer (can't move while > 0)
+    this.stressT = 0;   // panic timer while painted by a laser (erratic/flee)
+    this.fleeing = false; // this panic episode: bolting back vs. darting in place
     this.animClock = 0; // local time accumulator for effect animation phase
     this.dead = false;
     this.reachedEnd = false;
@@ -53,6 +55,15 @@ class Enemy {
   // Critical hit: freeze the enemy in place for `dur` seconds.
   addStun(dur) {
     this.stunT = Math.max(this.stunT, dur);
+  }
+
+  // Painted by a sniper's tracking laser: the unit panics and moves erratically.
+  // The first call of an episode decides whether it bolts back the way it came
+  // ("might try to escape") or just darts in place. Refreshed each frame it's
+  // tracked, so it relaxes shortly after the laser leaves.
+  applyStress(dur) {
+    if (this.stressT <= 0) this.fleeing = Math.random() < 0.6;
+    this.stressT = Math.max(this.stressT, dur);
   }
 
   // Brief positional jitter from a hit (kept to the strongest pending jolt).
@@ -126,12 +137,25 @@ class Enemy {
     const d = Math.hypot(dx, dy) || 1;
 
     const sp = this.speed();
-    const desiredX = (dx / d) * sp;
-    const desiredY = (dy / d) * sp;
+    let desiredX = (dx / d) * sp;
+    let desiredY = (dy / d) * sp;
+    // Panic (laser-painted): dart erratically and, if this episode is a
+    // bolter, reverse along the corridor to try to escape back the way it came.
+    let steerBoost = 0;
+    if (this.stressT > 0) {
+      const panic = Math.min(1, this.stressT / 0.4);
+      if (this.fleeing) {
+        desiredX = -dirX * sp * 1.25;
+        desiredY = -dirY * sp * 1.25;
+      }
+      desiredX += (Math.random() * 2 - 1) * 90 * panic;
+      desiredY += (Math.random() * 2 - 1) * 90 * panic;
+      steerBoost = 6 * panic; // jink around faster while spooked
+    }
     // Steering: blend velocity toward desired. Stronger correction when
     // off the path (after being shoved around by the swarm).
     const onPath = GameMap.isPath(Math.floor(this.x / GameMap.CELL), Math.floor(this.y / GameMap.CELL));
-    const steer = onPath ? 4 : 10;
+    const steer = (onPath ? 4 : 10) + steerBoost;
     this.vx += (desiredX - this.vx) * Math.min(1, steer * dt);
     this.vy += (desiredY - this.vy) * Math.min(1, steer * dt);
 
@@ -150,6 +174,7 @@ class Enemy {
     if (this.shakeT > 0) this.shakeT -= dt;
     if (this.warpT > 0) this.warpT -= dt;
     if (this.stunT > 0) this.stunT -= dt;
+    if (this.stressT > 0) this.stressT -= dt;
     this.animClock += dt;
   }
 
@@ -172,6 +197,12 @@ class Enemy {
       sw = size * (1 + osc * 0.55 * wf);
       sh = size * (1 - osc * 0.55 * wf);
     }
+    // Panic vibration while laser-painted (suppressed once frozen).
+    if (this.stressT > 0 && this.stunT <= 0) {
+      const s = Math.min(1, this.stressT / 0.4);
+      ox += (Math.random() * 2 - 1) * 1.8 * s;
+      oy += (Math.random() * 2 - 1) * 1.8 * s;
+    }
     const x = this.x + ox, y = this.y + oy;
     // Freezing strength while slowed (fades out over the last 0.8s of the slow).
     const frz = this.slowTimer > 0 ? Math.min(1, this.slowTimer / 0.8) : 0;
@@ -189,6 +220,14 @@ class Enemy {
     // Warp aura while displaced.
     if (this.warpT > 0) {
       rd.glow(x, y, r + 6, "#c08bff", 0.5 * (this.warpT / WARP_DUR));
+    }
+    // Panic alert while laser-painted: a flickering red ring + a bobbing alarm
+    // spark overhead, so a spooked (about-to-be-frozen) unit reads at a glance.
+    if (this.stressT > 0 && this.stunT <= 0) {
+      const s = Math.min(1, this.stressT / 0.4);
+      const c = this.animClock;
+      rd.ring(x, y, r + 3, "#ff3b3b", 1.4, (0.25 + 0.45 * Math.abs(Math.sin(c * 15))) * s, true);
+      rd.disc(x, y - r - 7 - Math.abs(Math.sin(c * 9)) * 1.5, 1.5, "#ff6b6b", 0.9 * s, true);
     }
     // Stun crackle: a pulsing ring plus little sparks orbiting overhead.
     if (this.stunT > 0) {

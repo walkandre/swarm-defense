@@ -10,6 +10,11 @@ const GameMap = {
   // How many entry/exit lanes a fresh map may have. Currently 1–2; widen
   // this range (e.g. [2, 4]) to generate busier maps without other changes.
   laneRange: [1, 2],
+  // Keep roads toward the vertical center: never in the first MIN_ROW rows nor
+  // the last BOTTOM_MARGIN rows. The corridor is 2 cells tall, so its top cell
+  // is bounded by [MIN_ROW, rows - BOTTOM_MARGIN - 2].
+  MIN_ROW: 3,
+  BOTTOM_MARGIN: 6,
   cols: 0,
   rows: 0,
   grid: null,        // grid[x][y] = true if path (not buildable)
@@ -36,13 +41,18 @@ const GameMap = {
       this.towersAt.push(new Array(this.rows).fill(null));
     }
 
-    // Spread lane start rows across the map height so they don't stack.
+    // Spread lane start rows across the map's vertical center. Roads stay out
+    // of the first 3 rows and the last 6 rows (see _buildLane), so confine the
+    // start band to that same window — the corridor is 2 cells tall, so its top
+    // cell runs from MIN_ROW to (rows - BOTTOM_MARGIN - 2).
     this.paths = [];
-    const usable = this.rows - 4; // leave a top/bottom margin
+    const minY = this.MIN_ROW;
+    const maxY = this.rows - this.BOTTOM_MARGIN - 2;
+    const usable = Math.max(1, maxY - minY);
     for (let lane = 0; lane < laneCount; lane++) {
       const band = usable / laneCount;
       const jitter = (rng() * 2 - 1) * band * 0.25;
-      const startY = Math.round(2 + band * (lane + 0.5) + jitter);
+      const startY = Math.round(minY + band * (lane + 0.5) + jitter);
       this.paths.push(this._buildLane(rng, startY));
     }
 
@@ -165,6 +175,7 @@ const GameMap = {
         let overlay = null;
         if (r < 0.05) overlay = Tileset.FOREST;
         else if (r < 0.15) overlay = Tileset.TREE;
+        else if (r < 0.20) overlay = Tileset.BUSH;
         col.push({ grass: V[(rng() * V.length) | 0], overlay });
       }
       this.deco.push(col);
@@ -176,7 +187,9 @@ const GameMap = {
   // distance from each waypoint to the exit.
   _buildLane(rng, startY) {
     const cs = this.CELL;
-    const minY = 1, maxY = this.rows - 3;
+    // Top cell of the 2-tall corridor stays within the centered window so the
+    // bottom cell (y+1) clears the last BOTTOM_MARGIN rows.
+    const minY = this.MIN_ROW, maxY = this.rows - this.BOTTOM_MARGIN - 2;
     const spine = [];
     let x = this.cols - 1;
     let y = clamp(startY, minY + 2, maxY - 2);
@@ -314,7 +327,9 @@ const GameMap = {
       for (let y = 0; y < this.rows; y++) {
         if (!this.grid[x][y]) continue;
         const m = this._roadMask(x, y);
-        if (m === 15) continue; // fully surrounded: leave smooth asphalt
+        // Fully-surrounded interior uses the dedicated plain-asphalt tile
+        // ([2,8], the curb-less cross) so wide gray areas read as proper
+        // pavement art rather than the flat ROAD_BASE fill colour.
         r.sprite(Tileset.ROAD[m], x * cs, y * cs, cs, cs);
       }
     }

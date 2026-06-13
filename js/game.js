@@ -93,13 +93,40 @@ function buildShop() {
   const keys = Object.keys(TOWER_TYPES);
   keys.forEach((type, i) => {
     const def = TOWER_TYPES[type];
+    // Each base lives in a slot; advanced variants hang in a popover that the
+    // slot reveals on hover (pure CSS — see #shop styles in index.html).
+    const slot = document.createElement("div");
+    slot.className = "tower-slot";
+
     const btn = document.createElement("button");
     btn.className = "tower-btn";
     btn.dataset.type = type;
     btn.title = def.desc;
-    btn.innerHTML = `<b style="color:${def.color}">${def.name}</b><small>${def.cost}g</small><span class="key">[${i + 1}]</span>`;
+    const adv = def.variants ? '<span class="adv">▴ more</span>' : "";
+    btn.innerHTML = `<b style="color:${def.color}">${def.name}</b><small>${def.cost}g</small><span class="key">[${i + 1}]</span>${adv}`;
     btn.addEventListener("click", () => selectTower(type));
-    shop.appendChild(btn);
+    slot.appendChild(btn);
+
+    if (def.variants) {
+      const pop = document.createElement("div");
+      pop.className = "tower-pop";
+      // The base itself is listed first ("Standard") so the popover is the full
+      // menu of versions for that category.
+      const entries = [[type, def, "Standard"]];
+      for (const [vid, vdef] of Object.entries(def.variants)) entries.push([vid, vdef, vdef.name]);
+      for (const [id, vdef, label] of entries) {
+        const v = document.createElement("button");
+        v.className = "variant-btn";
+        v.dataset.type = id;
+        v.title = vdef.desc;
+        v.innerHTML =
+          `<b style="color:${vdef.color}">${label}</b><small>${vdef.cost}g</small><i>${vdef.desc}</i>`;
+        v.addEventListener("click", (e) => { e.stopPropagation(); selectTower(id); });
+        pop.appendChild(v);
+      }
+      slot.appendChild(pop);
+    }
+    shop.appendChild(slot);
   });
 }
 
@@ -114,7 +141,16 @@ function updateHud() {
   document.getElementById("wave-val").textContent = Game.wave;
   document.getElementById("start-wave").disabled = Game.waveActive || Game.over;
   document.querySelectorAll(".tower-btn").forEach((btn) => {
-    const def = TOWER_TYPES[btn.dataset.type];
+    const def = TOWER_DEFS[btn.dataset.type];
+    // A base button reads as selected when it — or any of its variants — is the
+    // active choice, so picking "Twin Gunner" still lights up the Gunner slot.
+    const sel = btn.dataset.type === Game.selectedType ||
+      (def.variants && Game.selectedType in def.variants);
+    btn.classList.toggle("selected", !!sel);
+    btn.classList.toggle("unaffordable", def.cost > Game.gold);
+  });
+  document.querySelectorAll(".variant-btn").forEach((btn) => {
+    const def = TOWER_DEFS[btn.dataset.type];
     btn.classList.toggle("selected", btn.dataset.type === Game.selectedType);
     btn.classList.toggle("unaffordable", def.cost > Game.gold);
   });
@@ -147,7 +183,7 @@ function bindInput() {
     if (Game.over) return;
     const { cx, cy } = canvasCell(ev);
     if (!Game.selectedType) return;
-    const def = TOWER_TYPES[Game.selectedType];
+    const def = TOWER_DEFS[Game.selectedType];
     if (def.cost > Game.gold || !GameMap.canBuild(cx, cy)) return;
     const tower = new Tower(Game.selectedType, cx, cy);
     Game.towers.push(tower);
@@ -172,18 +208,40 @@ function bindInput() {
     const idx = parseInt(ev.key, 10) - 1;
     if (idx >= 0 && idx < keys.length) selectTower(keys[idx]);
     if (ev.key === "Escape") { Game.selectedType = null; updateHud(); }
+    if (ev.key === "9") { Game.gold += 3000; updateHud(); } // debug: top up gold
     if (ev.key === " " && !Game.waveActive) { ev.preventDefault(); startWave(); }
     if (ev.key === "v" || ev.key === "V") toggleView();
+    // "t" steps to the next time of day; Shift+T toggles a continuous cycle.
+    if (ev.key === "t") DayNight.next();
+    if (ev.key === "T") DayNight.auto = !DayNight.auto;
   });
 
   document.getElementById("start-wave").addEventListener("click", startWave);
   document.getElementById("new-map").addEventListener("click", newMap);
-  document.getElementById("toggle-view").addEventListener("click", toggleView);
+  document.getElementById("swap-tiles").addEventListener("click", () => Tileset.swap());
+  document.getElementById("day-btn").addEventListener("click", () => DayNight.next());
+
+  // Hamburger menu: toggle on click, close on outside click.
+  const menu = document.getElementById("menu");
+  document.getElementById("menu-btn").addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const open = menu.classList.toggle("open");
+    document.getElementById("menu-btn").setAttribute("aria-expanded", open);
+  });
+  document.addEventListener("click", (ev) => {
+    if (!menu.contains(ev.target)) {
+      menu.classList.remove("open");
+      document.getElementById("menu-btn").setAttribute("aria-expanded", false);
+    }
+  });
 }
 
 // ---------------------------------------------------------------- update
 
 function update(dt) {
+  // The day/night grade keeps animating even on the game-over screen.
+  DayNight.update(dt);
+
   if (Game.over) return;
 
   // Spawning.
@@ -279,7 +337,7 @@ function drawPlacementPreview(r) {
   if (!Game.selectedType || !Game.hoverCell) return;
   const { cx, cy } = Game.hoverCell;
   if (cx < 0 || cy < 0 || cx >= GameMap.cols || cy >= GameMap.rows) return;
-  const def = TOWER_TYPES[Game.selectedType];
+  const def = TOWER_DEFS[Game.selectedType];
   const cs = GameMap.CELL;
   const px = cx * cs + cs / 2;
   const py = cy * cs + cs / 2;
@@ -318,6 +376,49 @@ function spawnExplosion(x, y, color, radius) {
     waveR: radius * 4.5,
     particles,
   });
+}
+
+// Floating combat number for a single hit. Spawned at the impact point and
+// nudged along the shot's heading (dx,dy, normalized here) so the number drifts
+// the way the round was travelling while it rises and fades. Crits read larger
+// and gold. Rendered in the Canvas-2D overlay (drawDamageNumbers), not the world
+// renderer, since text lives on the HUD layer.
+function spawnDamage(effects, x, y, amount, dx, dy, crit) {
+  const l = Math.hypot(dx, dy) || 1;
+  const dur = crit ? 0.9 : 0.7;
+  effects.push({
+    kind: "dmg",
+    x: x + (Math.random() - 0.5) * 6, y: y - 8,
+    dx: dx / l, dy: dy / l,
+    amount: Math.max(1, Math.round(amount)),
+    crit: !!crit,
+    t: dur, dur,
+  });
+}
+
+// Damage numbers ride the top Canvas-2D layer (world coords == CSS px here, so
+// no remap needed). Position is a pure function of the effect's age: drift along
+// the shot heading + a gentle upward float, pop in, then fade out.
+function drawDamageNumbers(ctx) {
+  ctx.textAlign = "center";
+  ctx.lineWidth = 3;
+  ctx.lineJoin = "round";
+  for (const fx of Game.effects) {
+    if (fx.kind !== "dmg") continue;
+    const p = (fx.dur - fx.t) / fx.dur;           // 0 → 1 over its life
+    const drift = fx.crit ? 26 : 18;
+    const px = fx.x + fx.dx * drift * p;
+    const py = fx.y + fx.dy * drift * p - 16 * p; // float up as it travels
+    const alpha = p < 0.15 ? p / 0.15 : 1 - (p - 0.15) / 0.85;
+    ctx.globalAlpha = Math.max(0, alpha);
+    ctx.font = `bold ${fx.crit ? 14 : 10}px system-ui, sans-serif`;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
+    ctx.fillStyle = fx.crit ? "#ffd76b" : "#ffffff";
+    ctx.strokeText(fx.amount, px, py);
+    ctx.fillText(fx.amount, px, py);
+  }
+  ctx.globalAlpha = 1;
+  ctx.textAlign = "left";
 }
 
 function drawEffects(r) {
@@ -404,6 +505,24 @@ function drawEffects(r) {
         r.ring(fx.x, fx.y, fx.r * rp, fx.color, 3 * (1 - rp) + 1, (1 - rp) * 0.6, true);
       }
       r.glow(fx.x, fx.y, fx.r * (0.3 + p * 0.35), fx.color, Math.max(0, 1 - p * 3) * 0.85);
+    } else if (fx.kind === "evaporate") {
+      // The body boiling off: a quick hot flash, then vapor wisps rising and
+      // fading — warm at the base, cooling to gray steam as they climb. The
+      // scene-warping shimmer itself comes from the heat-haze post-process.
+      const age = fx.dur - fx.t;
+      const p = age / fx.dur;
+      const flash = Math.max(0, 1 - p * 3);
+      if (flash > 0) r.glow(fx.x, fx.y, fx.radius * 2.4, "#ffe0a8", flash * 0.85);
+      for (const w of fx.wisps) {
+        const lt = (age - w.delay) / w.life;
+        if (lt < 0 || lt >= 1) continue;
+        const px = fx.x + w.dx * (0.3 + lt * 0.7);
+        const py = fx.y - w.rise * lt;
+        const a = Math.sin(lt * Math.PI);
+        const sz = w.r * (0.5 + lt * 1.2);
+        if (lt < 0.4) r.glow(px, py, sz * 1.6, "#ff9b4a", a * 0.35);
+        r.disc(px, py, sz, lt < 0.4 ? "#ffcaa0" : "#c8ced6", a * 0.28);
+      }
     } else if (fx.kind === "beam") {
       r.line(fx.x1, fx.y1, fx.x2, fx.y2, fx.color, 2.5, Math.max(0, fx.t / 0.12));
     } else if (fx.kind === "blast") {
@@ -415,6 +534,11 @@ function drawEffects(r) {
 
 function drawOverlays(ctx) {
   const W = Game.width, H = Game.height;
+
+  // Time-of-day readout lives in the HUD (#day-btn). "t" cycles, Shift+T auto.
+  document.getElementById("day-btn").textContent =
+    `${DayNight.phaseName()}${DayNight.auto ? " ⟳" : ""}`;
+
   if (Game.over) {
     ctx.fillStyle = "rgba(10, 12, 16, 0.75)";
     ctx.fillRect(0, 0, W, H);
@@ -431,12 +555,6 @@ function drawOverlays(ctx) {
     ctx.font = "16px system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(`Next wave in ${Math.ceil(Game.autoStartTimer)}s — press Space to start now`, W / 2, 28);
-    ctx.textAlign = "left";
-  } else if (Game.wave === 0) {
-    ctx.fillStyle = "rgba(216, 222, 233, 0.85)";
-    ctx.font = "16px system-ui, sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText("Build towers, then press Start Wave (or Space)", W / 2, 28);
     ctx.textAlign = "left";
   }
 }
@@ -473,6 +591,36 @@ function render() {
   }
   r.setChromaPoints(chroma);
 
+  // A charging laser emitter boils the air in front of it: feed each one as a
+  // heat-haze source (warps + warm-tints the scene through the post-process).
+  const heat = [];
+  const cs = GameMap.CELL;
+  for (const t of Game.towers) {
+    if (!t.aim) continue;
+    const p = Math.min(1, t.aim.t / t.aim.dur);
+    const ml = (cs + 4) * 0.5;
+    heat.push({
+      x: t.x + Math.cos(t.angle) * ml,
+      y: t.y + Math.sin(t.angle) * ml,
+      r: 34 + p * 26,
+      intensity: 0.3 + 0.7 * p,
+    });
+  }
+  // Evaporating bodies boil the air too — strongest right as they vaporize.
+  for (const fx of Game.effects) {
+    if (fx.kind !== "evaporate") continue;
+    const life = fx.t / fx.dur; // 1 → 0 over its life
+    heat.push({ x: fx.x, y: fx.y - 4, r: fx.radius * 3, intensity: Math.min(1, life * 1.2) });
+  }
+  r.setHeatPoints(heat);
+
+  // Helicopter rotor downwash drives the WebGL dust post-process (no-op in 2D).
+  const dust = [];
+  for (const t of Game.towers) {
+    if (t.heli && t.heli.dust && t.heli.dust.intensity > 0.01) dust.push(t.heli.dust);
+  }
+  r.setDustPoints(dust);
+
   r.beginFrame();
   GameMap.draw(r);
   drawFrostGround(r);
@@ -481,6 +629,8 @@ function render() {
   for (const e of Game.enemies) e.draw(r);
   for (const p of Game.projectiles) p.draw(r);
   drawEffects(r);
+  // Airbase jets + bombs fly above everything else (drawn last in the world).
+  for (const t of Game.towers) if (t.drawAir) t.drawAir(r);
   r.endFrame();
 
   // HUD overlays always render in Canvas-2D on the top layer, regardless of
@@ -489,6 +639,7 @@ function render() {
   octx.setTransform(Game.dpr, 0, 0, Game.dpr, 0, 0);
   octx.imageSmoothingEnabled = false;
   octx.clearRect(0, 0, Game.width, Game.height);
+  drawDamageNumbers(octx);
   drawOverlays(octx);
 }
 
@@ -524,6 +675,11 @@ function buildDebugUI() {
   c.add(ChromaParams, "strength", 0, 20, 0.1).name("separation (px)");
   c.add(ChromaParams, "radius", 5, 150, 1).name("radius (px)");
   c.add(ChromaParams, "blur", 0, 20, 0.1).name("blur (px)");
+  const td = gui.addFolder("Time of day");
+  td.add(DayNight, "target", 0, DayNight.PHASES.length, 0.01).name("phase").listen();
+  td.add(DayNight, "ease", 0.2, 8, 0.1).name("transition speed");
+  td.add(DayNight, "auto").name("auto-cycle").listen();
+  td.add(DayNight, "secondsPerPhase", 2, 60, 1).name("phase seconds");
   makeGuiDraggable(gui);
 }
 
@@ -565,7 +721,7 @@ function makeGuiDraggable(gui) {
 function start() {
   buildShop();
   bindInput();
-  buildDebugUI();
+  // buildDebugUI();  // hidden for now — re-enable to live-tune frost/chroma params
   newMap();
   // Refit on resize while nothing is at stake; mid-game the canvas just
   // stretches via CSS so the layout (and your towers) stay intact.

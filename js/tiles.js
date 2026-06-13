@@ -9,6 +9,13 @@ const Tileset = {
   img: null,
   ready: false,
 
+  // Selectable sheets (same 18x11 layout, so all tile-coordinate tables apply
+  // to either). `src` is the active one; `version` bumps on every successful
+  // (re)load so the WebGL renderer knows to re-upload its cached texture.
+  SHEETS: ["assets/tilemap.png", "assets/tilemap_space.png"],
+  src: "assets/tilemap.png",
+  version: 0,
+
   // Asphalt base colour sampled from the road tiles; painted under the road
   // sprites so the curb-curled tile corners read as solid pavement instead of
   // showing grass through the gaps when the path corridor is two cells wide.
@@ -20,6 +27,15 @@ const Tileset = {
   BUSH: [5, 0],
   TREE: [4, 5],     // single pine
   FOREST: [4, 6],   // pair of pines
+
+  // Fighter jet scrambled by the Airbase tower. Drawn rotated to its heading;
+  // the sprite art points west (nose left, exhaust right), so draw code rotates
+  // it by heading + π to aim it along its flight path.
+  PLANE: [10, 6],
+
+  // Apache gunship — rare Airbase callsign. Hovers in front of the tower
+  // strafing the swarm with small missiles; its rotor downwash kicks up dust.
+  HELI: [12, 6],
 
   // Water auto-tiling (lakes & rivers). Key is a 4-bit mask of which
   // neighbours are also water: N=1 E=2 S=4 W=8. These tiles carry their own
@@ -73,6 +89,7 @@ const Tileset = {
     cannon: [14, 4],       // orange fort
     sniper: [13, 3],       // red missile launcher
     frost:  [9, 2],        // blue bunker
+    airbase: [9, 1],       // green command bunker
   },
 
   // Enemy units. `flip` mirrors the sprite so it faces left (the march
@@ -85,11 +102,23 @@ const Tileset = {
   },
 
   load(onReady) {
+    this._loadSrc(this.src, onReady);
+  },
+
+  // Swap to the next sheet in SHEETS and reload. `onReady` fires once it
+  // decodes; the canvas renderer picks up `img` automatically, the WebGL
+  // renderer re-uploads when it sees `version` change.
+  swap(onReady) {
+    const next = (this.SHEETS.indexOf(this.src) + 1) % this.SHEETS.length;
+    this.src = this.SHEETS[next];
+    this._loadSrc(this.src, onReady);
+  },
+
+  _loadSrc(src, onReady) {
     const img = new Image();
-    img.onload = () => { this.ready = true; onReady(); };
-    img.onerror = () => { console.error("Failed to load tilemap.png"); onReady(); };
-    img.src = "assets/tilemap.png";
-    this.img = img;
+    img.onload = () => { this.img = img; this.ready = true; this.version++; if (onReady) onReady(); };
+    img.onerror = () => { console.error("Failed to load " + src); if (onReady) onReady(); };
+    img.src = src;
   },
 
   // Blit tile [col,row] into the destination rect. `flip` mirrors horizontally.

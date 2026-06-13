@@ -11,7 +11,8 @@
 // Interface (all coordinates are logical/CSS pixels):
 //   beginFrame()                                   — clear + set up the frame
 //   endFrame()                                     — flush any batched geometry
-//   sprite(tile, dx, dy, dw, dh, flip)             — blit a tilemap.png tile
+//   sprite(tile, dx, dy, dw, dh, flip, alpha=1)    — blit a tilemap.png tile
+//   spriteRot(tile, cx, cy, dw, dh, angle, flip, alpha=1) — blit a tile rotated about its centre
 //   rect(x, y, w, h, color, alpha=1)               — filled rectangle
 //   disc(x, y, r, color, alpha=1, additive=false)  — filled circle
 //   ring(x, y, r, color, lineWidth=1, a=1, add=false) — stroked circle
@@ -43,6 +44,92 @@ const ChromaParams = {
   strength: 6,   // max channel separation in px next to a bullet
   radius: 46,    // px falloff radius of the aberration around a bullet
   blur: 3,       // px blur radius around a bullet (spreads it into neighbours)
+};
+
+// Heat-haze shimmer rising off a charging laser emitter (a rising, warbling
+// screen-space displacement + a faint warm tint in the post-process).
+const HeatParams = {
+  amp: 4.0,      // px of haze warp at full charge next to the emitter
+  tint: 0.16,    // warm colour bleed strength inside the haze
+};
+
+// --- Time-of-day colour grading --------------------------------------------
+// A whole-scene tone map applied as the final step of each frame: every painted
+// pixel is multiplied by an `ambient` light colour (the dominant grade) and
+// then a translucent `sky` colour is screened on top for atmosphere. Both
+// backends read DayNight.grade() and apply the same maths, so 2D and WebGL look
+// identical. The grade animates between PHASES so cycling reads as a smooth
+// sunrise/sunset rather than a hard cut.
+const DayNight = {
+  // Ordered ring of looks. `ambient` is a multiply (<=1, can't brighten); `sky`
+  // is [r,g,b,a] screened over the scene for a coloured haze.
+  PHASES: [
+    { name: "Day",   ambient: [1.00, 1.00, 1.00], sky: [0.00, 0.00, 0.00, 0.00] },
+    { name: "Dusk",  ambient: [1.00, 0.74, 0.56], sky: [1.00, 0.42, 0.16, 0.16] },
+    { name: "Night", ambient: [0.40, 0.48, 0.78], sky: [0.08, 0.16, 0.44, 0.20] },
+    { name: "Dawn",  ambient: [0.94, 0.78, 0.84], sky: [1.00, 0.60, 0.52, 0.12] },
+  ],
+
+  t: 0,        // current position along the phase ring (continuous, animated)
+  target: 0,   // where we're easing toward (a phase index, may exceed length)
+  ease: 2.5,   // how fast `t` chases `target` (per second)
+  auto: false, // continuously advance through the cycle on its own?
+  secondsPerPhase: 12, // dwell time per phase while auto-cycling
+
+  // Step forward to the next phase (wraps via the ever-growing target).
+  next() { this.target = Math.round(this.target) + 1; },
+
+  // Advance the clock: auto-cycle pushes the target, then `t` eases toward it.
+  update(dt) {
+    if (this.auto) this.target += dt / this.secondsPerPhase;
+    this.t += (this.target - this.t) * Math.min(1, dt * this.ease);
+  },
+
+  phaseName() {
+    const n = this.PHASES.length;
+    return this.PHASES[((Math.round(this.t) % n) + n) % n].name;
+  },
+
+  // Interpolate the two phases bracketing the current `t`.
+  grade() {
+    const n = this.PHASES.length;
+    const tt = ((this.t % n) + n) % n;
+    const i = Math.floor(tt);
+    const f = tt - i;
+    const a = this.PHASES[i];
+    const b = this.PHASES[(i + 1) % n];
+    return {
+      ambient: [
+        lerp(a.ambient[0], b.ambient[0], f),
+        lerp(a.ambient[1], b.ambient[1], f),
+        lerp(a.ambient[2], b.ambient[2], f),
+      ],
+      sky: [
+        lerp(a.sky[0], b.sky[0], f),
+        lerp(a.sky[1], b.sky[1], f),
+        lerp(a.sky[2], b.sky[2], f),
+        lerp(a.sky[3], b.sky[3], f),
+      ],
+    };
+  },
+
+  // 0 in full daylight → 1 at deep night, from the ambient light's luminance.
+  // Drives emissive effects (e.g. bullets casting light) so they only glow once
+  // the world is dark enough for the light to read.
+  darkness() {
+    const a = this.grade().ambient;
+    const lum = 0.299 * a[0] + 0.587 * a[1] + 0.114 * a[2];
+    return clamp((1 - lum) * 1.8, 0, 1);
+  },
+
+  // True when the grade is a no-op (plain daylight) so backends can skip it.
+  isIdentity() {
+    const g = this.grade();
+    return g.sky[3] < 0.002 &&
+      Math.abs(g.ambient[0] - 1) < 0.002 &&
+      Math.abs(g.ambient[1] - 1) < 0.002 &&
+      Math.abs(g.ambient[2] - 1) < 0.002;
+  },
 };
 
 // --- shared color parsing (WebGL needs floats; cached so it's cheap per-frame).
@@ -85,19 +172,59 @@ class Canvas2DRenderer {
     ctx.setTransform(Game.dpr, 0, 0, Game.dpr, 0, 0);
     // Crisp pixel-art scaling; resizing the canvas resets this each time.
     ctx.imageSmoothingEnabled = false;
-    ctx.clearRect(0, 0, Game.width, Game.height);
+    // Paint an opaque backdrop (matching the WebGL clear / CSS #181b22) rather
+    // than clearing to transparent, so the time-of-day multiply in endFrame
+    // grades the whole canvas — uncovered margins included — exactly like the
+    // WebGL post pass does, instead of leaving solid ambient bars at the edges.
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "#181b22";
+    ctx.fillRect(0, 0, Game.width, Game.height);
   }
 
-  endFrame() {}
+  endFrame() {
+    if (DayNight.isIdentity()) return;
+    const ctx = this.ctx;
+    const g = DayNight.grade();
+    const u8 = (v) => Math.round(clamp(v, 0, 1) * 255);
+    // Ambient: multiply the framebuffer down toward the light colour.
+    ctx.globalCompositeOperation = "multiply";
+    ctx.fillStyle = `rgb(${u8(g.ambient[0])}, ${u8(g.ambient[1])}, ${u8(g.ambient[2])})`;
+    ctx.fillRect(0, 0, Game.width, Game.height);
+    // Sky: screen a translucent atmosphere tint on top.
+    if (g.sky[3] > 0.002) {
+      ctx.globalCompositeOperation = "lighter";
+      ctx.globalAlpha = g.sky[3];
+      ctx.fillStyle = `rgb(${u8(g.sky[0])}, ${u8(g.sky[1])}, ${u8(g.sky[2])})`;
+      ctx.fillRect(0, 0, Game.width, Game.height);
+      ctx.globalAlpha = 1;
+    }
+    ctx.globalCompositeOperation = "source-over";
+  }
 
   // Canvas-2D can't sample the framebuffer, so these screen-space post effects
   // are WebGL-only flourishes; no-ops here (the frost ground/aura/tint and the
   // bullet trails still render through the shared primitives).
   setFrostFields() {}
   setChromaPoints() {}
+  setHeatPoints() {}
+  setDustPoints() {}
 
-  sprite(tile, dx, dy, dw, dh, flip) {
-    Tileset.draw(this.ctx, tile, dx, dy, dw, dh, flip);
+  sprite(tile, dx, dy, dw, dh, flip, alpha = 1) {
+    const ctx = this.ctx;
+    if (alpha !== 1) ctx.globalAlpha = alpha;
+    Tileset.draw(ctx, tile, dx, dy, dw, dh, flip);
+    if (alpha !== 1) ctx.globalAlpha = 1;
+  }
+
+  // Blit a tile rotated `angle` radians about the centre point (cx, cy).
+  spriteRot(tile, cx, cy, dw, dh, angle, flip, alpha = 1) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+    Tileset.draw(ctx, tile, -dw / 2, -dh / 2, dw, dh, flip);
+    ctx.restore();
   }
 
   rect(x, y, w, h, color, alpha = 1) {
@@ -181,7 +308,7 @@ class WebGLRenderer {
     if (!gl) return;
 
     this.spriteProg = this._program(WebGLRenderer.SPRITE_VS, WebGLRenderer.SPRITE_FS,
-      { a_pos: 0, a_uv: 1 });
+      { a_pos: 0, a_uv: 1, a_alpha: 2 });
     this.shapeProg = this._program(WebGLRenderer.SHAPE_VS, WebGLRenderer.SHAPE_FS,
       { a_pos: 0, a_local: 1, a_color: 2, a_misc: 3 });
     this.uSpriteRes = gl.getUniformLocation(this.spriteProg, "u_res");
@@ -214,6 +341,14 @@ class WebGLRenderer {
     this.uPostChromaStr = gl.getUniformLocation(this.postProg, "u_chromaStr");
     this.uPostChromaRad = gl.getUniformLocation(this.postProg, "u_chromaRad");
     this.uPostChromaBlur = gl.getUniformLocation(this.postProg, "u_chromaBlur");
+    this.uPostHeat = gl.getUniformLocation(this.postProg, "u_heat[0]");
+    this.uPostHeatCount = gl.getUniformLocation(this.postProg, "u_heatCount");
+    this.uPostHeatAmp = gl.getUniformLocation(this.postProg, "u_heatAmp");
+    this.uPostHeatTint = gl.getUniformLocation(this.postProg, "u_heatTint");
+    this.uPostDust = gl.getUniformLocation(this.postProg, "u_dust[0]");
+    this.uPostDustCount = gl.getUniformLocation(this.postProg, "u_dustCount");
+    this.uPostAmbient = gl.getUniformLocation(this.postProg, "u_ambient");
+    this.uPostSky = gl.getUniformLocation(this.postProg, "u_sky");
     this.quadBuf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
     gl.bufferData(gl.ARRAY_BUFFER,
@@ -224,9 +359,13 @@ class WebGLRenderer {
     this.frostFields = [];
     this.frostTowers = [];   // tower positions to keep crisp inside the field
     this.chromaPoints = [];  // sniper bullet positions for chromatic aberration
+    this.heatPoints = [];    // charging-laser emitters that shimmer with heat haze
+    this.dustPoints = [];    // helicopter downwash that swirls dust off the ground
     this._fieldBuf = new Float32Array(WebGLRenderer.MAX_FROST * 4);
     this._towerBuf = new Float32Array(WebGLRenderer.MAX_PROTECT * 2);
     this._chromaBuf = new Float32Array(WebGLRenderer.MAX_CHROMA * 2);
+    this._heatBuf = new Float32Array(WebGLRenderer.MAX_HEAT * 4);
+    this._dustBuf = new Float32Array(WebGLRenderer.MAX_DUST * 4);
     this.t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
 
     gl.disable(gl.DEPTH_TEST);
@@ -243,6 +382,14 @@ class WebGLRenderer {
 
   // Sniper bullet positions that radiate chromatic aberration.
   setChromaPoints(points) { this.chromaPoints = points || []; }
+
+  // Charging-laser emitters (logical x,y + radius + 0..1 intensity) that warp
+  // the scene with a rising heat shimmer.
+  setHeatPoints(points) { this.heatPoints = points || []; }
+
+  // Helicopter rotor downwash (logical x,y + radius + 0..1 intensity) that
+  // swirls a tan dust cloud up off the ground.
+  setDustPoints(points) { this.dustPoints = points || []; }
 
   // (Re)create the offscreen scene target when the backing size changes.
   _ensureTargets(bw, bh) {
@@ -311,6 +458,35 @@ class WebGLRenderer {
     gl.uniform1f(this.uPostChromaRad, ChromaParams.radius);
     gl.uniform1f(this.uPostChromaBlur, ChromaParams.blur);
 
+    // Heat-haze sources (charging laser emitters).
+    const hn = Math.min(WebGLRenderer.MAX_HEAT, this.heatPoints.length);
+    gl.uniform1i(this.uPostHeatCount, hn);
+    const harr = this._heatBuf;
+    harr.fill(0);
+    for (let i = 0; i < hn; i++) {
+      const h = this.heatPoints[i];
+      harr[i * 4] = h.x; harr[i * 4 + 1] = h.y; harr[i * 4 + 2] = h.r; harr[i * 4 + 3] = h.intensity;
+    }
+    gl.uniform4fv(this.uPostHeat, harr);
+    gl.uniform1f(this.uPostHeatAmp, HeatParams.amp);
+    gl.uniform1f(this.uPostHeatTint, HeatParams.tint);
+
+    // Helicopter dust sources.
+    const dn = Math.min(WebGLRenderer.MAX_DUST, this.dustPoints.length);
+    gl.uniform1i(this.uPostDustCount, dn);
+    const darr = this._dustBuf;
+    darr.fill(0);
+    for (let i = 0; i < dn; i++) {
+      const d = this.dustPoints[i];
+      darr[i * 4] = d.x; darr[i * 4 + 1] = d.y; darr[i * 4 + 2] = d.r; darr[i * 4 + 3] = d.intensity;
+    }
+    gl.uniform4fv(this.uPostDust, darr);
+
+    // Time-of-day grade (ambient multiply + screened sky tint).
+    const grade = DayNight.grade();
+    gl.uniform3f(this.uPostAmbient, grade.ambient[0], grade.ambient[1], grade.ambient[2]);
+    gl.uniform4f(this.uPostSky, grade.sky[0], grade.sky[1], grade.sky[2], grade.sky[3]);
+
     // Live-tunable parameters.
     gl.uniform1f(this.uPostAmp, FrostParams.displaceAmp);
     gl.uniform1f(this.uPostFreq, FrostParams.displaceFreq);
@@ -352,8 +528,12 @@ class WebGLRenderer {
   }
 
   _ensureTexture() {
-    if (this.tex || !Tileset.ready || !Tileset.img) return;
+    if (!Tileset.ready || !Tileset.img) return;
+    // Re-upload when the active sheet changes (Tileset.swap bumps version).
+    if (this.tex && this.texVersion === Tileset.version) return;
     const gl = this.gl;
+    if (this.tex) gl.deleteTexture(this.tex);
+    this.texVersion = Tileset.version;
     this.tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
@@ -374,7 +554,8 @@ class WebGLRenderer {
     const bh = Math.round(Game.height * Game.dpr);
     this.bw = bw; this.bh = bh;
     // Only pay for the offscreen target + post pass when an effect needs it.
-    this.usePost = this.frostFields.length > 0 || this.chromaPoints.length > 0;
+    this.usePost = this.frostFields.length > 0 || this.chromaPoints.length > 0 ||
+      this.heatPoints.length > 0 || this.dustPoints.length > 0 || !DayNight.isIdentity();
     if (this.usePost) this._ensureTargets(bw, bh);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.usePost ? this.fbo : null);
     gl.viewport(0, 0, bw, bh);
@@ -405,7 +586,7 @@ class WebGLRenderer {
     const gl = this.gl;
     if (!this.cur || this.verts.length === 0) { this.verts.length = 0; return; }
     const sprite = this.cur.kind === "sprite";
-    const floats = sprite ? 4 : 12;
+    const floats = sprite ? 5 : 12;
     const count = this.verts.length / floats;
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
@@ -425,6 +606,8 @@ class WebGLRenderer {
       gl.vertexAttribPointer(0, 2, gl.FLOAT, false, stride, 0);
       gl.enableVertexAttribArray(1);
       gl.vertexAttribPointer(1, 2, gl.FLOAT, false, stride, 8);
+      gl.enableVertexAttribArray(2);
+      gl.vertexAttribPointer(2, 1, gl.FLOAT, false, stride, 16);
     } else {
       gl.useProgram(this.shapeProg);
       gl.uniform2f(this.uShapeRes, Game.width, Game.height);
@@ -447,7 +630,7 @@ class WebGLRenderer {
 
   // --- primitives -----------------------------------------------------------
 
-  sprite(tile, dx, dy, dw, dh, flip) {
+  sprite(tile, dx, dy, dw, dh, flip, alpha = 1) {
     this._ensureTexture();
     if (!this.tex) return;
     this._batch("sprite", "normal");
@@ -459,9 +642,38 @@ class WebGLRenderer {
     const v1 = (tile[1] * step + Tileset.TILE - inset) / this.texH;
     if (flip) { const t = u0; u0 = u1; u1 = t; }
     const v = this.verts;
+    const a = alpha;
     const x1 = dx + dw, y1 = dy + dh;
-    v.push(dx, dy, u0, v0,  x1, dy, u1, v0,  x1, y1, u1, v1);
-    v.push(dx, dy, u0, v0,  x1, y1, u1, v1,  dx, y1, u0, v1);
+    v.push(dx, dy, u0, v0, a,  x1, dy, u1, v0, a,  x1, y1, u1, v1, a);
+    v.push(dx, dy, u0, v0, a,  x1, y1, u1, v1, a,  dx, y1, u0, v1, a);
+  }
+
+  // Rotated blit: same UVs as sprite(), but the four corners are rotated about
+  // (cx, cy) by `angle` so the tile can face any heading.
+  spriteRot(tile, cx, cy, dw, dh, angle, flip, alpha = 1) {
+    this._ensureTexture();
+    if (!this.tex) return;
+    this._batch("sprite", "normal");
+    const step = Tileset.TILE + Tileset.GAP;
+    const inset = 0.5;
+    let u0 = (tile[0] * step + inset) / this.texW;
+    let u1 = (tile[0] * step + Tileset.TILE - inset) / this.texW;
+    const v0 = (tile[1] * step + inset) / this.texH;
+    const v1 = (tile[1] * step + Tileset.TILE - inset) / this.texH;
+    if (flip) { const t = u0; u0 = u1; u1 = t; }
+    const co = Math.cos(angle), si = Math.sin(angle);
+    const hw = dw / 2, hh = dh / 2;
+    const px = (lx, ly) => cx + lx * co - ly * si;
+    const py = (lx, ly) => cy + lx * si + ly * co;
+    // corners: TL(-hw,-hh) TR(hw,-hh) BR(hw,hh) BL(-hw,hh)
+    const ax = px(-hw, -hh), ay = py(-hw, -hh);
+    const bx = px(hw, -hh),  by = py(hw, -hh);
+    const cX = px(hw, hh),   cY = py(hw, hh);
+    const dX = px(-hw, hh),  dY = py(-hw, hh);
+    const v = this.verts;
+    const a = alpha;
+    v.push(ax, ay, u0, v0, a,  bx, by, u1, v0, a,  cX, cY, u1, v1, a);
+    v.push(ax, ay, u0, v0, a,  cX, cY, u1, v1, a,  dX, dY, u0, v1, a);
   }
 
   // Push a shape quad: four corners carry a local coord in [-1,1] (used by the
@@ -523,19 +735,25 @@ class WebGLRenderer {
 WebGLRenderer.SPRITE_VS = `
 attribute vec2 a_pos;
 attribute vec2 a_uv;
+attribute float a_alpha;
 uniform vec2 u_res;
 varying vec2 v_uv;
+varying float v_alpha;
 void main() {
   vec2 c = vec2(a_pos.x / u_res.x * 2.0 - 1.0, 1.0 - a_pos.y / u_res.y * 2.0);
   gl_Position = vec4(c, 0.0, 1.0);
   v_uv = a_uv;
+  v_alpha = a_alpha;
 }`;
 
 WebGLRenderer.SPRITE_FS = `
 precision mediump float;
 uniform sampler2D u_tex;
 varying vec2 v_uv;
-void main() { gl_FragColor = texture2D(u_tex, v_uv); }`;
+varying float v_alpha;
+// Texture is premultiplied alpha, so scaling the whole sample by v_alpha fades
+// it correctly under the ONE, ONE_MINUS_SRC_ALPHA blend.
+void main() { gl_FragColor = texture2D(u_tex, v_uv) * v_alpha; }`;
 
 WebGLRenderer.SHAPE_VS = `
 attribute vec2 a_pos;
@@ -597,6 +815,8 @@ void main() {
 WebGLRenderer.MAX_FROST = 8;
 WebGLRenderer.MAX_PROTECT = 16;
 WebGLRenderer.MAX_CHROMA = 8;
+WebGLRenderer.MAX_HEAT = 8;
+WebGLRenderer.MAX_DUST = 8;
 
 WebGLRenderer.POST_VS = `
 attribute vec2 a_pos;
@@ -626,6 +846,14 @@ uniform vec2 u_chroma[8];           // sniper bullet positions (logical)
 uniform float u_chromaStr;
 uniform float u_chromaRad;
 uniform float u_chromaBlur;
+uniform int u_heatCount;
+uniform vec4 u_heat[8];             // x,y (logical), radius, intensity
+uniform float u_heatAmp;
+uniform float u_heatTint;
+uniform int u_dustCount;
+uniform vec4 u_dust[8];             // x,y (logical), radius, intensity
+uniform vec3 u_ambient;             // time-of-day light multiply
+uniform vec4 u_sky;                 // time-of-day sky tint (rgb, strength)
 varying vec2 v_uv;
 
 void main() {
@@ -661,6 +889,49 @@ void main() {
     float amp = u_amp * frost * (1.0 - protect * u_protectStr);
     uv += (disp * amp) / u_res * vec2(1.0, -1.0);
   }
+
+  // Heat haze: a rising, warbling displacement around each charging emitter —
+  // strongest at the source, biased to the air above it (heat rises), mostly a
+  // horizontal shimmer scrolling upward. The accumulated heat also drives a
+  // warm tint applied after sampling, below.
+  float heat = 0.0;
+  for (int i = 0; i < 8; i++) {
+    if (i >= u_heatCount) break;
+    vec4 h = u_heat[i];
+    float d = distance(frag, h.xy);
+    float fall = (1.0 - smoothstep(h.z * 0.1, h.z, d)) * h.w;
+    float above = clamp((h.y - frag.y) / h.z + 0.3, 0.0, 1.0);
+    fall *= mix(0.35, 1.0, above);
+    if (fall > 0.0) {
+      heat += fall;
+      float ph = (h.x + h.y) * 0.05;
+      float wobX = sin(frag.y * 0.45 - u_time * 7.0 + ph)
+                 + 0.5 * sin(frag.y * 0.9 - u_time * 11.0 + ph * 1.7);
+      float wobY = 0.4 * sin(frag.x * 0.6 - u_time * 6.0 + ph);
+      uv += vec2(wobX, wobY) * fall * u_heatAmp / u_res * vec2(1.0, -1.0);
+    }
+  }
+  heat = clamp(heat, 0.0, 1.0);
+
+  // Helicopter rotor downwash: dust billows outward from under the rotor in
+  // animated rings and a swirl that drags the scene tangentially (the blades
+  // stirring the air). The accumulated amount drives a tan tint after sampling.
+  float dust = 0.0;
+  for (int i = 0; i < 8; i++) {
+    if (i >= u_dustCount) break;
+    vec4 d = u_dust[i];
+    vec2 rel = frag - d.xy;
+    float dd = length(rel);
+    float fall = (1.0 - smoothstep(d.z * 0.15, d.z, dd)) * d.w;
+    if (fall > 0.0) {
+      float ang = atan(rel.y, rel.x);
+      float ring = 0.5 + 0.5 * sin(dd * 0.22 - u_time * 5.0 + sin(ang * 3.0 + u_time * 1.5) * 1.5);
+      dust += fall * ring;
+      vec2 tang = vec2(-rel.y, rel.x) / max(dd, 1.0);
+      uv += tang * fall * 2.0 * sin(u_time * 4.0 + dd * 0.08) / u_res * vec2(1.0, -1.0);
+    }
+  }
+  dust = clamp(dust, 0.0, 1.0);
 
   // Chromatic aberration radiating from each bullet: split the R/B channels
   // along the radial direction, strongest at the bullet and fading to nothing.
@@ -707,6 +978,19 @@ void main() {
     float spk = sin(frag.x * 0.7 + u_time * 5.0) * sin(frag.y * 0.6 - u_time * 4.0);
     col += smoothstep(0.96, 1.0, spk) * frost * u_sparkle;
   }
+
+  // Warm bleed inside the heat haze, so the shimmer reads as hot air.
+  if (heat > 0.001) col += vec3(1.0, 0.55, 0.2) * heat * u_heatTint;
+
+  // Tan dust haze over the ground inside the rotor downwash.
+  if (dust > 0.001) {
+    vec3 dustCol = vec3(0.86, 0.74, 0.52);
+    col = mix(col, col * dustCol + vec3(0.10, 0.08, 0.05), dust * 0.6);
+  }
+
+  // Time-of-day grade: ambient multiply, then add the sky tint (matches the
+  // Canvas-2D "lighter" overlay so both backends grade identically).
+  col = col * u_ambient + u_sky.rgb * u_sky.a;
 
   gl_FragColor = vec4(col, 1.0);
 }`;
