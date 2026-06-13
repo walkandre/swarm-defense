@@ -1,6 +1,6 @@
 {
   "$schema": "tilemap.atlas.schema",
-  "note": "Tile annotations for the Swarm Defense sprite sheets. Tiles are keyed by \"col,row\" (0-indexed), matching how js/tiles.js addresses them. Both tilemap.png and tilemap_space.png share this 18x11 / 16px / 1px-gap layout, so these coordinates apply to either. Doc-only: the game does not read this file; it is a reference for humans and Claude. Annotate via tools/atlas.html.",
+  "note": "Tile annotations for the Swarm Defense sprite sheets. Tiles are keyed by \"col,row\" (0-indexed), matching how js/tiles.js addresses them. Both tilemap.png and tilemap_space.png share this 18x11 / 16px / 1px-gap layout, so these coordinates apply to either. The game loads this file at runtime (when served over http) and resolves tiles by name, so re-pointing a name's col,row here re-points it in the game; js/tiles.js carries a built-in fallback copy for when this file can't be fetched (e.g. file://). Annotate via tools/atlas.html.",
   "image": "assets/tilemap.png",
   "tileSize": 16,
   "spacing": 1,

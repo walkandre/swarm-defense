@@ -43,7 +43,7 @@
 <div id="side">
   <div>
     <h1>Tilemap Atlas Annotator</h1>
-    <div class="muted">Click a tile, describe it, export the JSON. Doc-only — the game doesn't read it.</div>
+    <div class="muted">Click a tile, describe it, export the JSON. The game loads this atlas and resolves tiles by name.</div>
   </div>
 
   <div class="toolbar">
@@ -122,7 +122,7 @@ let sel = null; // {c,r}
 function blankAtlas() {
   return {
     "$schema": "tilemap.atlas.schema",
-    note: "Tile annotations keyed by \"col,row\" (0-indexed), matching js/tiles.js. Doc-only.",
+    note: "Tile annotations keyed by \"col,row\" (0-indexed), matching js/tiles.js. The game loads this atlas at runtime and resolves tiles by name.",
     image: "assets/tilemap.png", tileSize: TILE, spacing: GAP, margin: 0,
     columns: COLS, rows: ROWS, categories: CATS.slice(), tiles: {}
   };
