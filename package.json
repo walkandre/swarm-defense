@@ -1,0 +1,10 @@
+{
+  "name": "swarm-defense",
+  "version": "1.0.0",
+  "description": "Swarm Defense — a vanilla-JavaScript canvas tower-defense game.",
+  "scripts": {
+    "start": "python3 -m http.server 8000",
+    "serve": "npx --yes serve ."
+  },
+  "license": "MIT"
+}
