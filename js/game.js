@@ -104,7 +104,16 @@ function buildShop() {
     btn.title = def.desc;
     const adv = def.variants ? '<span class="adv">▴ more</span>' : "";
     btn.innerHTML = `<b style="color:${def.color}">${def.name}</b><small>${def.cost}g</small><span class="key">[${i + 1}]</span>${adv}`;
-    btn.addEventListener("click", () => selectTower(type));
+    btn.addEventListener("click", (e) => {
+      // On touch devices with variants, first tap opens the popover; a second
+      // tap (when already open) falls through to selectTower.
+      if (def.variants && window.matchMedia("(hover: none)").matches) {
+        const isOpen = slot.classList.contains("pop-open");
+        document.querySelectorAll(".tower-slot.pop-open").forEach(s => s.classList.remove("pop-open"));
+        if (!isOpen) { slot.classList.add("pop-open"); e.stopPropagation(); return; }
+      }
+      selectTower(type);
+    });
     slot.appendChild(btn);
 
     if (def.variants) {
@@ -232,6 +241,9 @@ function bindInput() {
     if (!menu.contains(ev.target)) {
       menu.classList.remove("open");
       document.getElementById("menu-btn").setAttribute("aria-expanded", false);
+    }
+    if (!ev.target.closest(".tower-slot")) {
+      document.querySelectorAll(".tower-slot.pop-open").forEach(s => s.classList.remove("pop-open"));
     }
   });
 }
