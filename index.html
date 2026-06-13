@@ -2,6 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#14161c">
 <title>Swarm Defense</title>
 <style>
   :root {
@@ -167,6 +172,43 @@
     pointer-events: none;
   }
   #overlay { pointer-events: auto; }
+
+  /* ---- Mobile / touch optimizations ---- */
+  @media (max-width: 640px) {
+    #hud {
+      padding: 10px 12px;
+      gap: 10px;
+    }
+    .stat { font-size: 17px; }
+    button {
+      padding: 10px 16px;
+      font-size: 15px;
+      min-height: 44px;
+    }
+    #menu-btn { font-size: 22px; padding: 8px 14px; min-height: 44px; }
+    .tower-btn {
+      min-width: 64px;
+      padding: 8px 6px;
+      gap: 3px;
+    }
+    .tower-btn small { font-size: 13px; }
+    .tower-btn b { font-size: 13px; }
+    #shop {
+      gap: 6px;
+      padding: 8px 6px;
+      max-width: calc(100vw - 16px);
+      overflow-x: auto;
+    }
+    .tower-pop { width: 200px; }
+    .variant-btn { padding: 10px 9px; }
+  }
+
+  /* Touch-device popovers: toggled by JS class instead of :hover */
+  @media (hover: none) {
+    .tower-slot:hover .tower-pop { display: none; }
+    .tower-slot.pop-open .tower-pop { display: flex; }
+    .tower-btn .key { display: none; }
+  }
 </style>
 </head>
 <body>
