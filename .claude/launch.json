@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "swarm-defense",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "4126"],
+      "port": 4126
+    }
+  ]
+}

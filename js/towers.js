@@ -50,8 +50,15 @@ const TOWER_TYPES = {
   },
   airbase: {
     name: "Airbase", cost: 240, range: 210, damage: 36, fireRate: 0.25,
-    color: "#9ccc65", desc: "Scrambles a jet that circles, then strafes the lane with bombs",
-    splash: 44, projectile: "airstrike",
+    color: "#9ccc65", desc: "Scrambles a flight of jets that circle, then strafe the lane with bombs",
+    splash: 44, projectile: "airstrike", air: "jets",
+    variants: {
+      "airbase-apache": {
+        name: "Apache Wing", cost: 340, range: 230, damage: 36, fireRate: 0.2,
+        color: "#aed581", desc: "Deploys an Apache gunship that holds station and rockets the swarm",
+        splash: 44, projectile: "airstrike", air: "heli",
+      },
+    },
   },
 };
 
@@ -288,16 +295,20 @@ class Tower {
     if (target) this.angle = Math.atan2(target.y - this.y, target.x - this.x);
 
     if (this.cooldown <= 0 && target) {
-      if (!this.heli && Math.random() < Tower.HELI_CHANCE) {
-        // Rare callsign: a single Apache gunship instead of the jet flight.
-        this._launchHeli(target);
+      if (this.def.air === "heli") {
+        // Apache Wing: hold a single gunship on station; only redeploy once the
+        // current one has flown off (so it loiters and rockets the swarm).
+        if (!this.heli) {
+          this._launchHeli(target);
+          this.cooldown = 1 / this.def.fireRate;
+        }
       } else {
         // Scramble a formation of 2–3 jets; they enter the orbit spread apart
         // and peel off into their strafing runs one after another.
         const count = randInt(Math.random, 2, 3);
         for (let i = 0; i < count; i++) this._launchPlane(target, i, count);
+        this.cooldown = 1 / this.def.fireRate;
       }
-      this.cooldown = 1 / this.def.fireRate;
     }
 
     for (const p of this.planes) this._updatePlane(p, dt, enemies);
@@ -864,9 +875,6 @@ class Tower {
 // scale+fade out flown after the strafing run.
 Tower.PLANE_APPEAR = 0.4;
 Tower.PLANE_FADE = 1.2;
-
-// Chance an Airbase strike scrambles the Apache gunship instead of the jets.
-Tower.HELI_CHANCE = 0.18;
 
 class Projectile {
   constructor(tower, target, speed, opts = {}) {
