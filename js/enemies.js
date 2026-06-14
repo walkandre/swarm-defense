@@ -4,10 +4,16 @@
 const SHAKE_DUR = 0.18;
 const WARP_DUR = 0.4;
 
+// `attack` (optional) lets a unit fire back at towers: range/damage in the same
+// units as towers, fireRate in shots/sec, projSpeed in px/s. color tints the
+// bolt (defaults to the unit color). Tanks lob heavy shells; grunts pop lighter
+// rounds; runners and swarmlings are unarmed (they just rush the exit).
 const ENEMY_TYPES = {
-  grunt:     { hp: 42,  speed: 55,  radius: 9,  gold: 5,  color: "#e07a5f", mass: 1.0 },
+  grunt:     { hp: 42,  speed: 55,  radius: 9,  gold: 5,  color: "#e07a5f", mass: 1.0,
+               attack: { range: 120, damage: 5,  fireRate: 0.45, projSpeed: 240, color: "#ffae6b" } },
   runner:    { hp: 22,  speed: 105, radius: 7,  gold: 6,  color: "#f2cc8f", mass: 0.6 },
-  tank:      { hp: 210, speed: 30,  radius: 14, gold: 16, color: "#9b5de5", mass: 3.0 },
+  tank:      { hp: 210, speed: 30,  radius: 14, gold: 16, color: "#9b5de5", mass: 3.0,
+               attack: { range: 165, damage: 22, fireRate: 0.35, projSpeed: 190, color: "#c08bff" } },
   swarmling: { hp: 10,  speed: 85,  radius: 5,  gold: 2,  color: "#80ed99", mass: 0.3 },
 };
 
@@ -36,6 +42,11 @@ class Enemy {
     // Personal lateral offset from the corridor centerline — spreads the
     // swarm across the path width instead of single-file.
     this.lateral = (rng() * 2 - 1) * (cs * 0.55);
+    // Ranged counterattack (tanks/grunts). Stagger the first shot so a wave
+    // doesn't volley in perfect unison.
+    this.attack = def.attack || null;
+    this.attackCd = this.attack ? rng() * (1 / this.attack.fireRate) : 0;
+
     this.wpIndex = 0;
     this.slowTimer = 0;
     this.slowFactor = 1;
@@ -102,13 +113,17 @@ class Enemy {
     return this.path.remaining[i] + Math.hypot(wp.x - this.x, wp.y - this.y);
   }
 
-  update(dt) {
+  update(dt, towers, shots, effects) {
     // Stunned (critical hit): hold position — still tick timers and absorb
     // shoves from the swarm via resolveEnemyCollisions, just don't advance.
+    // Frozen units can't shoot either.
     if (this.stunT > 0) {
       this.tickTimers(dt);
       return;
     }
+
+    // Fire back at any tower in range while marching (movement continues below).
+    this._tryShoot(dt, towers, shots, effects);
 
     const wps = this.path.waypoints;
 
@@ -166,6 +181,30 @@ class Enemy {
 
     if (d < GameMap.CELL * 0.9) this.wpIndex++;
     this.tickTimers(dt);
+  }
+
+  // Armed units shoot the nearest tower in range. Fires on its own cooldown and
+  // keeps moving — no need to stop. A small muzzle flash marks the shot.
+  _tryShoot(dt, towers, shots, effects) {
+    if (!this.attack || !towers || !towers.length) return;
+    this.attackCd -= dt;
+    if (this.attackCd > 0) return;
+
+    const r2 = this.attack.range * this.attack.range;
+    let best = null, bestD = Infinity;
+    for (const t of towers) {
+      if (t.dead) continue;
+      const d = dist2(this.x, this.y, t.x, t.y);
+      if (d <= r2 && d < bestD) { bestD = d; best = t; }
+    }
+    if (!best) return; // ready, but nothing to shoot — fire as soon as one appears
+
+    this.attackCd = 1 / this.attack.fireRate;
+    shots.push(new EnemyShot(this, best));
+    if (effects) {
+      effects.push({ kind: "blast", x: this.x, y: this.y, r: 8, t: 0.12,
+        color: this.attack.color || this.def.color });
+    }
   }
 
   tickTimers(dt) {
@@ -251,6 +290,57 @@ class Enemy {
       rd.rect(x - w / 2, y - r - 7, w * frac, 4,
         frac > 0.5 ? "#7ae582" : frac > 0.25 ? "#ffd166" : "#ef476f");
     }
+  }
+}
+
+// A bolt fired by an armed enemy at a tower. Towers don't move, so it locks the
+// target's position at launch and flies straight there, then deals its damage
+// (and a little splash kick) on arrival. A glowing head with a fading trail.
+class EnemyShot {
+  constructor(enemy, tower) {
+    this.x = enemy.x;
+    this.y = enemy.y;
+    this.tower = tower;
+    this.tx = tower.x;
+    this.ty = tower.y;
+    this.speed = enemy.attack.projSpeed || 220;
+    this.damage = enemy.attack.damage;
+    this.color = enemy.attack.color || enemy.def.color;
+    const dx = this.tx - this.x, dy = this.ty - this.y;
+    const d = Math.hypot(dx, dy) || 1;
+    this.dirX = dx / d;
+    this.dirY = dy / d;
+    this.trail = [];
+    this.done = false;
+  }
+
+  update(dt, towers, effects) {
+    this.trail.push(this.x, this.y);
+    if (this.trail.length > 14) this.trail.splice(0, this.trail.length - 14);
+
+    const dx = this.tx - this.x, dy = this.ty - this.y;
+    const d = Math.hypot(dx, dy);
+    const step = this.speed * dt;
+    if (d <= step + 2) {
+      // Reached the spot. Damage the tower if it's still standing there.
+      if (this.tower && !this.tower.dead) this.tower.damage(this.damage);
+      effects.push({ kind: "blast", x: this.tx, y: this.ty, r: 12, t: 0.2, color: this.color });
+      this.done = true;
+      return;
+    }
+    this.x += this.dirX * step;
+    this.y += this.dirY * step;
+  }
+
+  draw(r) {
+    const t = this.trail, n = t.length / 2;
+    for (let i = 1; i < n; i++) {
+      const a = i / n;
+      r.line(t[(i - 1) * 2], t[(i - 1) * 2 + 1], t[i * 2], t[i * 2 + 1],
+        this.color, 1 + 2 * a, 0.45 * a, true);
+    }
+    r.glow(this.x, this.y, 6, this.color, 0.6);
+    r.disc(this.x, this.y, 2.4, "#fff1f0", 0.95, true);
   }
 }
 

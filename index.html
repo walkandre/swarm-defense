@@ -84,8 +84,15 @@
   #shop {
     position: absolute;
     bottom: 16px;
-    left: 50%;
-    transform: translateX(-50%);
+    /* Centered via auto margins, NOT transform: a transformed ancestor would
+       become the containing block for the position:fixed variant popover and
+       re-clip it inside #shop's overflow. Auto-margin centering keeps the
+       popover anchored to the viewport so it can escape the clip box. */
+    left: 0;
+    right: 0;
+    margin: 0 auto;
+    width: max-content;
+    max-width: calc(100vw - 16px);
     display: flex;
     gap: 8px;
     padding: 8px;
@@ -100,16 +107,17 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 2px;
-    min-width: 86px;
-    padding: 5px 10px;
-    line-height: 1.2;
+    gap: 1px;
+    min-width: 70px;
+    padding: 4px 8px;
+    line-height: 1.15;
   }
-  .tower-btn small { color: var(--gold); font-size: 12px; }
+  .tower-btn b { font-size: 13px; }
+  .tower-btn small { color: var(--gold); font-size: 11px; }
   .tower-btn .key { color: var(--dim); font-size: 10px; }
   .tower-btn.selected { border-color: var(--accent); background: #2a3a4d; box-shadow: 0 0 8px rgba(79,195,247,0.35); }
   .tower-btn.unaffordable small { color: var(--danger); }
-  .tower-btn .adv { color: var(--accent); font-size: 9px; opacity: 0.85; }
+  body.mobile .tower-btn .key { display: none; }
   /* A slot wraps a base tower button and its advanced-variant popover. */
   .tower-slot { position: relative; display: flex; }
   .tower-pop {
@@ -138,7 +146,17 @@
     right: 0;
     height: 12px;
   }
-  .tower-slot:hover .tower-pop { display: flex; }
+  /* Desktop reveals variants on hover; `body.mobile` (set in JS) suppresses
+     this so a tap doesn't leave a stuck synthetic-hover popover. */
+  body:not(.mobile) .tower-slot:hover .tower-pop { display: flex; }
+  /* Popover opened by tap on mobile. Lifted to position:fixed so it escapes
+     #shop's horizontal-scroll clip box; positionPopover() sets its left/bottom. */
+  .tower-slot.pop-open .tower-pop {
+    display: flex;
+    position: fixed;
+    transform: none;
+    margin-bottom: 0;
+  }
   .variant-btn {
     display: grid;
     grid-template-columns: 1fr auto;
@@ -188,27 +206,19 @@
     }
     #menu-btn { font-size: 20px; padding: 6px 11px; min-height: 40px; }
     .tower-btn {
-      min-width: 60px;
-      padding: 8px 6px;
-      gap: 3px;
+      min-width: 54px;
+      padding: 6px 5px;
+      gap: 2px;
     }
-    .tower-btn small { font-size: 12px; }
-    .tower-btn b { font-size: 13px; }
+    .tower-btn small { font-size: 11px; }
+    .tower-btn b { font-size: 12px; }
     #shop {
-      gap: 6px;
-      padding: 8px 6px;
-      max-width: calc(100vw - 16px);
+      gap: 5px;
+      padding: 6px 5px;
       overflow-x: auto;
     }
     .tower-pop { width: 200px; }
     .variant-btn { padding: 10px 9px; }
-  }
-
-  /* Touch-device popovers: toggled by JS class instead of :hover */
-  @media (hover: none) {
-    .tower-slot:hover .tower-pop { display: none; }
-    .tower-slot.pop-open .tower-pop { display: flex; }
-    .tower-btn .key { display: none; }
   }
 </style>
 </head>

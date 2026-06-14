@@ -1,5 +1,12 @@
 "use strict";
 
+// Touch/mobile detection. Done via touch-capability rather than a hover media
+// query — simulators and responsive modes report `hover: hover` even on a
+// touchscreen, so hover queries are unreliable. maxTouchPoints/ontouchstart
+// are dependable. Drives `body.mobile`, which scopes the shop's tap-vs-hover
+// behaviour (see #shop styles in index.html).
+const IS_MOBILE = (navigator.maxTouchPoints || 0) > 0 || "ontouchstart" in window;
+
 const Game = {
   canvas: null,
   ctx: null,
@@ -9,6 +16,7 @@ const Game = {
   enemies: [],
   towers: [],
   projectiles: [],
+  enemyShots: [],   // bolts armed enemies fire back at towers
   effects: [],
   gold: 220,
   lives: 20,
@@ -76,6 +84,7 @@ function newMap() {
   Game.enemies = [];
   Game.towers = [];
   Game.projectiles = [];
+  Game.enemyShots = [];
   Game.effects = [];
   Game.gold = 220;
   Game.lives = 20;
@@ -88,13 +97,14 @@ function newMap() {
 }
 
 function buildShop() {
+  document.body.classList.toggle("mobile", IS_MOBILE);
   const shop = document.getElementById("shop");
   shop.innerHTML = "";
   const keys = Object.keys(TOWER_TYPES);
   keys.forEach((type, i) => {
     const def = TOWER_TYPES[type];
-    // Each base lives in a slot; advanced variants hang in a popover that the
-    // slot reveals on hover (pure CSS — see #shop styles in index.html).
+    // Each base lives in a slot; advanced variants hang in a popover the slot
+    // reveals on hover (desktop) or on tap (mobile) — see #shop styles.
     const slot = document.createElement("div");
     slot.className = "tower-slot";
 
@@ -102,22 +112,18 @@ function buildShop() {
     btn.className = "tower-btn";
     btn.dataset.type = type;
     btn.title = def.desc;
-    const adv = def.variants ? '<span class="adv">▴ more</span>' : "";
-    btn.innerHTML = `<b style="color:${def.color}">${def.name}</b><small>${def.cost}g</small><span class="key">[${i + 1}]</span>${adv}`;
-    if (def.variants) {
-      // touchend + preventDefault is the reliable iOS path: it fires before the
-      // synthesized click and suppresses it, so the click listener below won't
-      // double-fire on touch devices.
-      btn.addEventListener("touchend", (e) => {
-        e.preventDefault();
+    btn.innerHTML = `<b style="color:${def.color}">${def.name}</b><small>${def.cost}g</small><span class="key">[${i + 1}]</span>`;
+    // Desktop: click selects the base directly; variants are reached by hover.
+    // Mobile: there is no hover, so a tap on a base-with-variants opens the
+    // popover (which lists "Standard" plus the variants) instead of selecting.
+    btn.addEventListener("click", () => {
+      if (def.variants && IS_MOBILE) {
         const isOpen = slot.classList.contains("pop-open");
         document.querySelectorAll(".tower-slot.pop-open").forEach(s => s.classList.remove("pop-open"));
-        if (!isOpen) { slot.classList.add("pop-open"); } else { selectTower(type); }
-      }, { passive: false });
-    }
-    // Click handles desktop (hover devices) and touch buttons without variants.
-    btn.addEventListener("click", () => {
-      if (!def.variants || !window.matchMedia("(hover: none)").matches) selectTower(type);
+        if (!isOpen) { slot.classList.add("pop-open"); positionPopover(slot); }
+      } else {
+        selectTower(type);
+      }
     });
     slot.appendChild(btn);
 
@@ -142,6 +148,21 @@ function buildShop() {
     }
     shop.appendChild(slot);
   });
+}
+
+// An open (.pop-open) popover is position:fixed (see #shop styles) so it can
+// escape the horizontally-scrolling shop's clip box. Place it centered above
+// its slot, clamped to stay on-screen at the row's edges.
+function positionPopover(slot) {
+  const pop = slot.querySelector(".tower-pop");
+  if (!pop) return;
+  const r = slot.getBoundingClientRect();
+  const pw = pop.offsetWidth; // measured after pop-open made it visible
+  const margin = 8;
+  let left = r.left + r.width / 2 - pw / 2;
+  left = Math.max(margin, Math.min(left, window.innerWidth - pw - margin));
+  pop.style.left = left + "px";
+  pop.style.bottom = (window.innerHeight - r.top + 10) + "px";
 }
 
 function selectTower(type) {
@@ -212,6 +233,7 @@ function bindInput() {
     const tower = GameMap.towersAt?.[cx]?.[cy];
     if (!tower) return;
     Game.gold += tower.sellValue();
+    tower.dead = true; // neutralise any enemy bolts already in flight at it
     GameMap.towersAt[cx][cy] = null;
     Game.towers.splice(Game.towers.indexOf(tower), 1);
     updateHud();
@@ -278,14 +300,29 @@ function update(dt) {
     }
   }
 
-  // Enemies.
-  for (const e of Game.enemies) e.update(dt);
+  // Enemies (also fire back at towers via Game.enemyShots).
+  for (const e of Game.enemies) e.update(dt, Game.towers, Game.enemyShots, Game.effects);
   resolveEnemyCollisions(Game.enemies);
 
   // Towers and projectiles.
   for (const t of Game.towers) t.update(dt, Game.enemies, Game.projectiles, Game.effects);
   for (const p of Game.projectiles) p.update(dt, Game.enemies, Game.effects);
   Game.projectiles = Game.projectiles.filter((p) => !p.done);
+
+  // Enemy bolts in flight toward towers.
+  for (const s of Game.enemyShots) s.update(dt, Game.towers, Game.effects);
+  Game.enemyShots = Game.enemyShots.filter((s) => !s.done);
+
+  // Destroyed towers: blow up, free their cell, and drop them from the list.
+  if (Game.towers.some((t) => t.dead)) {
+    for (const t of Game.towers) {
+      if (!t.dead) continue;
+      spawnExplosion(t.x, t.y, t.def.color, GameMap.CELL * 0.5);
+      if (GameMap.towersAt[t.cx]) GameMap.towersAt[t.cx][t.cy] = null;
+    }
+    Game.towers = Game.towers.filter((t) => !t.dead);
+    updateHud();
+  }
 
   // Effects decay.
   for (const fx of Game.effects) fx.t -= dt;
@@ -651,6 +688,7 @@ function render() {
   for (const t of Game.towers) t.draw(r);
   for (const e of Game.enemies) e.draw(r);
   for (const p of Game.projectiles) p.draw(r);
+  for (const s of Game.enemyShots) s.draw(r);
   drawEffects(r);
   // Airbase jets + bombs fly above everything else (drawn last in the world).
   for (const t of Game.towers) if (t.drawAir) t.drawAir(r);

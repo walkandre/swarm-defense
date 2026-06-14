@@ -157,6 +157,12 @@ class Tower {
     this.x = cx * cs + cs / 2;
     this.y = cy * cs + cs / 2;
     this.cooldown = 0;
+    // Structures can now be shot by armed enemies. HP scales with cost (a
+    // def.hp override wins if present); destroyed towers are removed in update().
+    this.maxHp = this.def.hp || Math.round(60 + this.def.cost * 0.8);
+    this.hp = this.maxHp;
+    this.hitFlash = 0; // brief white/red flash when struck
+    this.dead = false;
     this.angle = Math.PI; // face left toward incoming enemies
     this.pulseAnim = 0;
     this.recoil = 0; // 1 right after firing, decays to 0 (visual kickback)
@@ -550,6 +556,7 @@ class Tower {
     if (this.pulseAnim > 0) this.pulseAnim -= dt;
     if (this.recoil > 0) this.recoil = Math.max(0, this.recoil - dt / 0.22);
     if (this.muzzle > 0) this.muzzle = Math.max(0, this.muzzle - dt / 0.1);
+    if (this.hitFlash > 0) this.hitFlash -= dt;
 
     if (this.def.projectile === "pulse") {
       const r2 = this.def.range * this.def.range;
@@ -664,6 +671,14 @@ class Tower {
     });
   }
 
+  // Take a hit from an enemy bolt. Cleanup (cell freeing, debris) happens in the
+  // game update once `dead` is set.
+  damage(amount) {
+    this.hp -= amount;
+    this.hitFlash = 0.12;
+    if (this.hp <= 0) { this.hp = 0; this.dead = true; }
+  }
+
   sellValue() {
     return Math.floor(this.def.cost * 0.7);
   }
@@ -679,6 +694,19 @@ class Tower {
     const bx = -Math.cos(this.angle) * kick;
     const by = -Math.sin(this.angle) * kick;
     r.sprite(Tileset.TOWERS[this.spriteKey], this.cx * cs + off + bx, this.cy * cs + off - 2 + by, size, size);
+
+    // Damage feedback: a red flash on impact and a health bar once hurt.
+    if (this.hitFlash > 0) {
+      r.disc(this.x, this.y, cs * 0.5, "#ff5a5a", Math.min(1, this.hitFlash / 0.12) * 0.45, true);
+    }
+    if (this.hp < this.maxHp) {
+      const w = cs * 0.72;
+      const frac = Math.max(0, this.hp / this.maxHp);
+      const by2 = this.cy * cs - 2;
+      r.rect(this.x - w / 2, by2, w, 4, "rgba(0,0,0,0.6)");
+      r.rect(this.x - w / 2, by2, w * frac, 4,
+        frac > 0.5 ? "#7ae582" : frac > 0.25 ? "#ffd166" : "#ef476f");
+    }
 
     // Muzzle flash at the barrel tip in the moment after firing.
     if (kick > 0) {
