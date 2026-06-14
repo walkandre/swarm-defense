@@ -80,17 +80,13 @@
   }
   #menu.open #menu-list { display: flex; }
   #menu-list button { width: 100%; text-align: left; white-space: nowrap; }
-  /* Tower selection floats over the bottom of the map, horizontally centered. */
-  #shop {
+  /* Bottom docks floating over the map: the shop (left) and the wave bar
+     (right) share one panel style. No transform is used for positioning — a
+     transformed ancestor would become the containing block for the
+     position:fixed variant popover and re-clip it inside #shop's overflow. */
+  #shop, #wave-bar {
     position: absolute;
     bottom: 16px;
-    /* Centered via auto margins, NOT transform: a transformed ancestor would
-       become the containing block for the position:fixed variant popover and
-       re-clip it inside #shop's overflow. Auto-margin centering keeps the
-       popover anchored to the viewport so it can escape the clip box. */
-    left: 0;
-    right: 0;
-    margin: 0 auto;
     width: max-content;
     max-width: calc(100vw - 16px);
     display: flex;
@@ -103,10 +99,13 @@
     pointer-events: auto;
     z-index: 2;
   }
-  .tower-btn {
+  #shop { left: 16px; }
+  #wave-bar { right: 16px; }
+  .tower-btn, #start-wave {
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: center;
     gap: 1px;
     min-width: 70px;
     padding: 4px 8px;
@@ -170,7 +169,8 @@
   .variant-btn i { grid-column: 1 / -1; color: var(--dim); font-size: 11px; font-style: normal; }
   .variant-btn.selected { border-color: var(--accent); background: #2a3a4d; }
   .variant-btn.unaffordable small { color: var(--danger); }
-  #start-wave { border-color: var(--accent); font-weight: 600; }
+  /* Match the three-line tower buttons' height and label font so the two docks line up. */
+  #start-wave { border-color: var(--accent); font-weight: 700; font-size: 13px; min-height: 49px; }
   #canvas-wrap {
     flex: 1;
     min-height: 0;
@@ -219,6 +219,13 @@
     }
     .tower-pop { width: 200px; }
     .variant-btn { padding: 10px 9px; }
+    /* Mobile tower buttons fall back to the 40px button min-height; match it. */
+    #start-wave { min-height: 40px; }
+    /* On phones, center the shop and stack the Next Wave bar above it with a
+       gap. Centering uses auto margins (not transform) so the fixed variant
+       popover still escapes the shop's clip box. */
+    #shop { left: 0; right: 0; margin: 0 auto; }
+    #wave-bar { left: 0; right: 0; margin: 0 auto; bottom: 86px; }
   }
 </style>
 </head>
@@ -229,7 +236,6 @@
     <div class="stat"><span>Lives</span><b id="lives-val">0</b></div>
     <div class="stat"><span>Wave</span><b id="wave-val">0</b></div>
     <div class="spacer"></div>
-    <button id="start-wave">Start Wave</button>
     <div id="menu">
       <button id="menu-btn" title="Menu" aria-haspopup="true" aria-expanded="false">&#9776;</button>
       <div id="menu-list">
@@ -244,6 +250,7 @@
     <canvas id="game"></canvas>
     <canvas id="overlay"></canvas>
     <div id="shop"></div>
+    <div id="wave-bar"><button id="start-wave">Next<br>Wave</button></div>
   </div>
 </div>
 <!-- Optional debug GUI; the game guards on its presence, so it's fine offline. -->

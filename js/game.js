@@ -817,6 +817,12 @@ function toggleView() {
 }
 
 function init() {
+  // On phones the default 40px cell makes the map render zoomed-in (few cells
+  // across the narrow screen). Shrink the cell ~20% so more cells fit and the
+  // map reads wider / more zoomed-out. Everything derives cols/rows from CELL,
+  // so this is the only knob needed.
+  if (IS_MOBILE) GameMap.CELL = 32;
+
   Game.glCanvas = document.getElementById("game-gl");
   Game.canvas = document.getElementById("game");          // 2D world layer
   Game.overlayCanvas = document.getElementById("overlay"); // HUD layer (always 2D)
